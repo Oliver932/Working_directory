@@ -746,9 +746,9 @@ class RobotKinematics:
         for _ in range(max_attempts):
 
             # Random difficulty for each parameter independently
-            d_radius = np.random.rand()
-            d_rx = np.random.rand()
-            d_rz = np.random.rand()
+            d_radius = np.random.rand() * (max_difficulty - min_difficulty) + min_difficulty
+            d_rx = np.random.rand() * (max_difficulty - min_difficulty) + min_difficulty
+            d_rz = np.random.rand() * (max_difficulty - min_difficulty) + min_difficulty
 
             # Generate random position in circular pattern around home
             if d_radius > 0:
