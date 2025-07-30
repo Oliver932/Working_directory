@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 import os
 import imageio
+import tempfile
 from collections import deque
 from datetime import datetime
 import json
@@ -28,13 +29,11 @@ from stable_baselines3.common.monitor import Monitor
 # ==================================================================================
 class VideoRecorderCallback(BaseCallback):
     """A custom callback for recording and saving evaluation videos as MP4 files."""
-    def __init__(self, eval_env: gym.Env, render_path: str, eval_freq: int, n_eval_episodes: int, verbose: int = 1):
+    def __init__(self, eval_env: gym.Env, eval_freq: int, n_eval_episodes: int, verbose: int = 1):
         super().__init__(verbose)
         self.eval_env = eval_env
-        self.render_path = render_path
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
-        os.makedirs(self.render_path, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.n_calls > 0 and self.n_calls % self.eval_freq == 0:
@@ -51,8 +50,12 @@ class VideoRecorderCallback(BaseCallback):
                     obs, _, terminated, truncated, _ = self.eval_env.step(action)
                     done = terminated or truncated
             
-            overview_vid_path = os.path.join(self.render_path, f"replay_step_{self.n_calls}_overview.mp4")
-            robot_vid_path = os.path.join(self.render_path, f"replay_step_{self.n_calls}_robot.mp4")
+            # Use temporary files that get deleted after MLflow logging
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=f"_step_{self.n_calls}_overview.mp4", delete=False) as tmp_overview:
+                overview_vid_path = tmp_overview.name
+            with tempfile.NamedTemporaryFile(suffix=f"_step_{self.n_calls}_robot.mp4", delete=False) as tmp_robot:
+                robot_vid_path = tmp_robot.name
             
             print(f"--- Saving overview video to {overview_vid_path} ---")
             imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
@@ -62,6 +65,10 @@ class VideoRecorderCallback(BaseCallback):
             # MLFLOW: Log the generated videos as artifacts
             mlflow.log_artifact(overview_vid_path, artifact_path="replays")
             mlflow.log_artifact(robot_vid_path, artifact_path="replays")
+            
+            # Clean up temporary files
+            os.unlink(overview_vid_path)
+            os.unlink(robot_vid_path)
         return True
 
     def record_performance(self, model, n_episodes=5, prefix="final"):
@@ -78,8 +85,12 @@ class VideoRecorderCallback(BaseCallback):
                 done = terminated or truncated
             obs, _ = self.eval_env.reset()
             
-        overview_vid_path = os.path.join(self.render_path, f"{prefix}_replay_overview.mp4")
-        robot_vid_path = os.path.join(self.render_path, f"{prefix}_replay_robot.mp4")
+        # Use temporary files
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=f"_{prefix}_replay_overview.mp4", delete=False) as tmp_overview:
+            overview_vid_path = tmp_overview.name
+        with tempfile.NamedTemporaryFile(suffix=f"_{prefix}_replay_robot.mp4", delete=False) as tmp_robot:
+            robot_vid_path = tmp_robot.name
         
         print(f"--- Saving overview video to {overview_vid_path} ---")
         imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
@@ -89,6 +100,10 @@ class VideoRecorderCallback(BaseCallback):
         # MLFLOW: Log the final videos as artifacts
         mlflow.log_artifact(overview_vid_path, artifact_path="replays")
         mlflow.log_artifact(robot_vid_path, artifact_path="replays")
+        
+        # Clean up temporary files
+        os.unlink(overview_vid_path)
+        os.unlink(robot_vid_path)
 
 # ==================================================================================
 # == Custom Metrics Callback                                                      ==
@@ -97,15 +112,15 @@ class CustomMetricsCallback(BaseCallback):
     """
     A custom callback to log domain-specific metrics to TensorBoard and MLflow.
     """
-    def __init__(self, verbose=0):
+    def __init__(self, window_size=100, verbose=0):
         super().__init__(verbose)
-        self.success_rate_window = deque(maxlen=100)
-        self.collision_episode_window = deque(maxlen=100)
-        self.invalid_move_prop_window = deque(maxlen=100)
-        self.failed_grip_rate_window = deque(maxlen=100)
-        self.avg_difficulty_window = deque(maxlen=100)
-        self.ellipse_visible_prop_window = deque(maxlen=100)
-        self.ellipse_calculable_prop_window = deque(maxlen=100)
+        self.success_rate_window = deque(maxlen=window_size)
+        self.collision_episode_window = deque(maxlen=window_size)
+        self.invalid_move_prop_window = deque(maxlen=window_size)
+        self.failed_grip_rate_window = deque(maxlen=window_size)
+        self.avg_difficulty_window = deque(maxlen=window_size)
+        self.ellipse_visible_prop_window = deque(maxlen=window_size)
+        self.ellipse_calculable_prop_window = deque(maxlen=window_size)
 
     def _on_step(self) -> bool:
         if self.locals.get("infos")[0].get("episode"):
@@ -254,7 +269,8 @@ class CustomRobotEnv(gym.Env):
         # --- Initialize Environment State and Components ---
         self.current_step = 0
         self.render_mode = render_mode
-        self.robot = RobotKinematics(verbosity=0)
+        robot_verbosity = self.config.get("robot", {}).get("verbosity", 0)
+        self.robot = RobotKinematics(verbosity=robot_verbosity)
         self.ring = Ring()
         
         # --- Curriculum and Noise Setup ---
@@ -490,6 +506,16 @@ class CustomRobotEnv(gym.Env):
     def close(self):
         pass
 
+def load_config(config_path="config.json"):
+    """Load configuration from JSON file with error handling."""
+    try:
+        with open(config_path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Config file {config_path} not found. Please ensure the configuration file exists.")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Error parsing config file: {e}. Please check the JSON syntax in {config_path}.")
+
 # MLFLOW: Helper function to flatten the config dictionary for logging
 def flatten_dict(d, parent_key='', sep='.'):
     items = []
@@ -507,44 +533,11 @@ def flatten_dict(d, parent_key='', sep='.'):
 if __name__ == '__main__':
     
     # ==============================================================================
-    # == CONFIGURATION & HYPERPARAMETERS                                          ==
+    # == LOAD CONFIGURATION                                                       ==
     # ==============================================================================
-    CONFIG = {
-        "training": {
-            "total_timesteps": 30000,
-            "ppo_policy": "MultiInputPolicy",
-            "tensorboard_log_path": "./outputs/tensorboard_logs/", 
-        },
-        "evaluation": {
-            "n_eval_episodes": 100,
-            "n_video_episodes": 4
-        },
-        "environment": {
-            "max_steps": 500,
-            "multipliers": { "linear": 4.0, "rx": 0.5, "rz": 0.5 },
-            "ellipse_scale_factor": 0.5,  # Scale factor for ellipse vectors to fit in [-1, 1] range
-            "rewards": {
-                "success": 100.0, "fail_grip": -30.0, "collision": -100.0,
-                "fail_move": -10.0, "time": -0.01,
-            },
-            "paths": {
-                "gripper_col": "./meshes/gripper_collision_mesh.stl",
-                "ring_render": "./meshes/ring_render_mesh.stl",
-                "ring_col": "./meshes/ring_collision_mesh.stl",
-            },
-            "camera": { "fov": 60, "width": 960, "height": 544 },
-            "overview_camera": { "width": 320, "height": 240 },
-            "curriculum": [
-                {"pose_range_min": 0.0, "pose_range_max": 0.2, "obs_noise": 0.0, "action_noise": 0.0},
-                {"pose_range_min": 0.2, "pose_range_max": 0.6, "obs_noise": 0.01, "action_noise": 0.01},
-                {"pose_range_min": 0.6, "pose_range_max": 1.0, "obs_noise": 0.05, "action_noise": 0.05},
-            ]
-        },
-        "callbacks": {
-            "video_recorder": { "eval_freq": 100000, "n_eval_episodes": 3 },
-            "curriculum_trainer": { "check_freq": 10000, "success_threshold": 0.8 }
-        }
-    }
+    CONFIG = load_config("config.json")
+    print("--- Configuration loaded successfully ---")
+    
     # ==============================================================================
     
     # --- Runtime Options ---
@@ -558,11 +551,6 @@ if __name__ == '__main__':
     # --- Generate Unique Paths for This Run ---
     time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{run_name_input}_{time_str}" if run_name_input else f"PPO_{time_str}"
-    
-    run_output_dir = os.path.join("outputs", run_name)
-    model_save_path = os.path.join(run_output_dir, "ppo_custom_robot.zip")
-    replays_path = os.path.join(run_output_dir, "replays")
-    os.makedirs(replays_path, exist_ok=True)
 
     # MLFLOW: Start an MLflow Run. All subsequent logging will be associated with this run.
     with mlflow.start_run(run_name=run_name):
@@ -577,10 +565,11 @@ if __name__ == '__main__':
         mlflow.log_params(flat_config)
         
         # MLFLOW: Also save the full config as a JSON artifact for easy viewing
-        config_path = os.path.join(run_output_dir, "config.json")
-        with open(config_path, 'w') as f:
-            json.dump(CONFIG, f, indent=4)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='_config.json', delete=False) as tmp_config:
+            json.dump(CONFIG, tmp_config, indent=4)
+            config_path = tmp_config.name
         mlflow.log_artifact(config_path)
+        os.unlink(config_path)  # Clean up temp file
 
         MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps", "calculable_steps")
         
@@ -599,7 +588,9 @@ if __name__ == '__main__':
             eval_env = Monitor(eval_env)
 
         # --- Callback Setup ---
-        custom_metrics_callback = CustomMetricsCallback()
+        custom_metrics_callback = CustomMetricsCallback(
+            window_size=CONFIG["callbacks"]["custom_metrics"]["window_size"]
+        )
         curriculum_callback = CurriculumTrainerCallback(
             metrics_callback=custom_metrics_callback,
             **CONFIG["callbacks"]["curriculum_trainer"]
@@ -609,7 +600,6 @@ if __name__ == '__main__':
         if needs_eval_env:
             video_callback = VideoRecorderCallback(
                 eval_env=eval_env, 
-                render_path=replays_path,
                 **CONFIG["callbacks"]["video_recorder"]
             )
             if record_while_training:
@@ -619,12 +609,27 @@ if __name__ == '__main__':
 
         # --- Agent Training ---
         print("--- Training the agent ---")
-        model = PPO(
-            CONFIG["training"]["ppo_policy"], 
-            train_env, 
-            verbose=1, 
-            tensorboard_log=CONFIG["training"]["tensorboard_log_path"]
-        )
+        
+        # Extract PPO hyperparameters from config
+        ppo_kwargs = {
+            "policy": CONFIG["training"]["ppo_policy"],
+            "env": train_env,
+            "verbose": CONFIG["training"].get("verbose", 1),
+            "tensorboard_log": CONFIG["training"]["tensorboard_log_path"]
+        }
+        
+        # Add optional PPO parameters if they exist in config
+        optional_params = [
+            "learning_rate", "n_steps", "batch_size", "n_epochs", 
+            "gamma", "gae_lambda", "clip_range", "ent_coef", 
+            "vf_coef", "max_grad_norm"
+        ]
+        
+        for param in optional_params:
+            if param in CONFIG["training"]:
+                ppo_kwargs[param] = CONFIG["training"][param]
+        
+        model = PPO(**ppo_kwargs)
         
         model.learn(
             total_timesteps=CONFIG["training"]["total_timesteps"], 
@@ -635,12 +640,19 @@ if __name__ == '__main__':
         print("--- Training finished ---")
 
         # --- Save the Final Model ---
+        with tempfile.NamedTemporaryFile(suffix='_ppo_model.zip', delete=False) as tmp_model:
+            model_save_path = tmp_model.name
+        
         print(f"--- Saving the model to {model_save_path} ---")
         model.save(model_save_path)
         
         # MLFLOW: Log the final model and the TensorBoard logs as artifacts
         print("--- Logging final artifacts to MLflow ---")
         mlflow.log_artifact(model_save_path, artifact_path="model")
+        
+        # Clean up temporary model file
+        os.unlink(model_save_path)
+        
         tensorboard_log_dir = os.path.join(CONFIG["training"]["tensorboard_log_path"], run_name)
         if os.path.exists(tensorboard_log_dir):
             mlflow.log_artifacts(tensorboard_log_dir, artifact_path="tensorboard")
@@ -648,8 +660,18 @@ if __name__ == '__main__':
         del model
 
         # --- Load and Evaluate the Trained Model ---
-        print(f"--- Loading the model from {model_save_path} ---")
-        loaded_model = PPO.load(model_save_path)
+        # Download model from MLflow artifacts for evaluation
+        print("--- Downloading model from MLflow artifacts ---")
+        artifact_path = mlflow.get_artifact_uri("model")
+        model_files = mlflow.artifacts.list_artifacts("model")
+        model_file = next((f for f in model_files if f.path.endswith('.zip')), None)
+        
+        if model_file:
+            downloaded_model_path = mlflow.artifacts.download_artifacts(f"model/{model_file.path}")
+            print(f"--- Loading the model from {downloaded_model_path} ---")
+            loaded_model = PPO.load(downloaded_model_path)
+        else:
+            raise FileNotFoundError("Could not find model file in MLflow artifacts")
 
         if evaluate_at_end:
             print("--- Evaluating policy ---")

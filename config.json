@@ -1,0 +1,107 @@
+{
+    "training": {
+        "total_timesteps": 30000,
+        "ppo_policy": "MultiInputPolicy",
+        "tensorboard_log_path": "./outputs/tensorboard_logs/",
+        "verbose": 1,
+        "learning_rate": 3e-4,
+        "n_steps": 2048,
+        "batch_size": 64,
+        "n_epochs": 10,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_range": 0.2,
+        "ent_coef": 0.0,
+        "vf_coef": 0.5,
+        "max_grad_norm": 0.5
+    },
+    "evaluation": {
+        "n_eval_episodes": 100,
+        "n_video_episodes": 4,
+        "deterministic": true
+    },
+    "environment": {
+        "max_steps": 500,
+        "multipliers": {
+            "linear": 4.0,
+            "rx": 0.5,
+            "rz": 0.5
+        },
+        "ellipse_scale_factor": 0.5,
+        "rewards": {
+            "success": 100.0,
+            "fail_grip": -30.0,
+            "collision": -100.0,
+            "fail_move": -10.0,
+            "time": -0.01
+        },
+        "paths": {
+            "gripper_col": "./meshes/gripper_collision_mesh.stl",
+            "ring_render": "./meshes/ring_render_mesh.stl",
+            "ring_col": "./meshes/ring_collision_mesh.stl"
+        },
+        "camera": {
+            "fov": 60,
+            "width": 960,
+            "height": 544
+        },
+        "overview_camera": {
+            "width": 320,
+            "height": 240
+        },
+        "curriculum": [
+            {
+                "pose_range_min": 0.0,
+                "pose_range_max": 0.2,
+                "obs_noise": 0.0,
+                "action_noise": 0.0
+            },
+            {
+                "pose_range_min": 0.2,
+                "pose_range_max": 0.6,
+                "obs_noise": 0.01,
+                "action_noise": 0.01
+            },
+            {
+                "pose_range_min": 0.6,
+                "pose_range_max": 1.0,
+                "obs_noise": 0.05,
+                "action_noise": 0.05
+            }
+        ],
+        "robot": {
+            "verbosity": 0
+        }
+    },
+    "callbacks": {
+        "video_recorder": {
+            "eval_freq": 5000,
+            "n_eval_episodes": 3
+        },
+        "curriculum_trainer": {
+            "check_freq": 10000,
+            "success_threshold": 0.8
+        },
+        "custom_metrics": {
+            "window_size": 100
+        }
+    },
+    "observation_space": {
+        "ellipse_position_bounds": [-5.0, 5.0],
+        "ellipse_vector_bounds": [-1.0, 1.0],
+        "actuator_bounds": [0.0, 1.0],
+        "delta_bounds": [-1.0, 1.0],
+        "E1_position_bounds": [-1.0, 1.0],
+        "delta_E1_bounds": [-3.14159, 3.14159],
+        "quaternion_bounds": [-1.0, 1.0],
+        "E1_normalization_factor": 400.0
+    },
+    "action_space": {
+        "bounds": [-1.0, 1.0],
+        "dimensions": 5
+    },
+    "rendering": {
+        "fps": 30,
+        "video_format": "FFMPEG"
+    }
+}
