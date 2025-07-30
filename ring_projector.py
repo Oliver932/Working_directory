@@ -94,7 +94,7 @@ class RingProjector:
         self.projected_properties = {}
 
         # Pre-calculate constant values for point generation and projection
-        self.num_ring_points = 20
+        self.num_ring_points = 25
         theta = np.linspace(0, 2 * np.pi, self.num_ring_points)
         self.cos_theta = np.cos(theta)
         self.sin_theta = np.sin(theta)
@@ -280,8 +280,13 @@ class RingProjector:
         # --- 4. Normalize results consistently ---
         center_x_proj, center_y_proj = self.normalize_point(xc_px, yc_px, img_w, img_h)
 
-        # Check if center is visible on screen (within [-0.5, 0.5] range)
-        center_visible = (-0.5 <= center_x_proj <= 0.5) and (-0.5 <= center_y_proj <= 0.5)
+        # Check if any of the actual projected ring points are visible on screen
+        # projected_points_2d is already in normalized coordinates [-0.5, 0.5]
+        x_coords = projected_points_2d[:, 0]
+        y_coords = projected_points_2d[:, 1]
+        visible_mask = ((x_coords >= -0.5) & (x_coords <= 0.5) & 
+                       (y_coords >= -0.5) & (y_coords <= 0.5))
+        center_visible = np.any(visible_mask)
 
         # OpenCV's angle corresponds to d1_px, but we need to ensure it corresponds to the major axis
         if d1_px >= d2_px:
@@ -359,8 +364,9 @@ class RingProjector:
         # Normalize results
         center_x_proj, center_y_proj = self.normalize_point(xc_px, yc_px, width, height)
 
-        # Check if center is visible on screen (within [-0.5, 0.5] range)
-        center_visible = (-0.5 <= center_x_proj <= 0.5) and (-0.5 <= center_y_proj <= 0.5)
+        # For render method, we need to check if rendered points are visible
+        # Since we already have the points that were used for ellipse fitting
+        center_visible = len(points_to_fit) > 0  # If we found points to fit, some are visible
 
         # OpenCV's angle corresponds to d1_px, but we need to ensure it corresponds to the major axis
         if d1_px >= d2_px:
