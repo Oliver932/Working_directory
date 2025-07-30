@@ -3,10 +3,8 @@ from gymnasium import spaces
 import numpy as np
 import os
 import imageio
-import tempfile
 import glob
 from collections import deque
-from datetime import datetime
 import json
 
 # MLFLOW: Import the mlflow library
@@ -25,7 +23,6 @@ from overview_render_manager import OverviewRenderManager
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3 import PPO
-from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
 
 # ==================================================================================
@@ -55,8 +52,6 @@ class VideoRecorderCallback(BaseCallback):
                     done = terminated or truncated
             
             # Use temporary files that get deleted after MLflow logging
-            import tempfile
-            import os
             temp_dir = "C:/temp/artifacts"
             os.makedirs(temp_dir, exist_ok=True)
             
@@ -92,8 +87,6 @@ class VideoRecorderCallback(BaseCallback):
             obs, _ = self.eval_env.reset()
             
         # Use temporary files
-        import tempfile
-        import os
         temp_dir = "C:/temp/artifacts"
         os.makedirs(temp_dir, exist_ok=True)
         
@@ -390,11 +383,6 @@ class CustomRobotEnv(gym.Env):
         self.failed_grips = 0
         self.visible_steps = 0
         self.calculable_steps = 0
-        
-        # Reset previous state variables for delta calculations
-        self.previous_extensions = None
-        self.previous_E1_position = None
-        self.previous_quaternion = None
         
         # Reset previous distance variables for improvement rewards
         self.previous_dist_E1 = None
