@@ -459,7 +459,7 @@ if __name__ == '__main__':
     # ==============================================================================
     CONFIG = {
         "training": {
-            "total_timesteps": 1000000,
+            "total_timesteps": 30000,
             "ppo_policy": "MultiInputPolicy",
             "tensorboard_log_path": "./outputs/tensorboard_logs/", 
         },
@@ -476,9 +476,9 @@ if __name__ == '__main__':
                 "fail_move": -10.0, "time": -0.01,
             },
             "paths": {
-                "gripper_col": "./Working_directory/meshes/gripper_collision_mesh.stl",
-                "ring_render": "./Working_directory/meshes/ring_render_mesh.stl",
-                "ring_col": "./Working_directory/meshes/ring_collision_mesh.stl",
+                "gripper_col": "./meshes/gripper_collision_mesh.stl",
+                "ring_render": "./meshes/ring_render_mesh.stl",
+                "ring_col": "./meshes/ring_collision_mesh.stl",
             },
             "camera": { "fov": 60, "width": 960, "height": 544 },
             "overview_camera": { "width": 320, "height": 240 },
