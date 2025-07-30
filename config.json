@@ -1,6 +1,6 @@
 {
     "training": {
-        "total_timesteps": 30000,
+        "total_timesteps": 100000,
         "ppo_policy": "MultiInputPolicy",
         "verbose": 1
     },
@@ -18,11 +18,11 @@
         },
         "ellipse_scale_factor": 0.5,
         "rewards": {
-            "success": 100.0,
+            "success": 1000.0,
             "fail_grip": -30.0,
             "collision": -100.0,
             "fail_move": -10.0,
-            "time": -0.01
+            "time": -0.001
         },
         "paths": {
             "gripper_col": "./meshes/gripper_collision_mesh.stl",
@@ -41,12 +41,12 @@
         "curriculum": [
             {
                 "pose_range_min": 0.0,
-                "pose_range_max": 0.2,
+                "pose_range_max": 0.1,
                 "obs_noise": 0.0,
                 "action_noise": 0.0
             },
             {
-                "pose_range_min": 0.2,
+                "pose_range_min": 0.1,
                 "pose_range_max": 0.6,
                 "obs_noise": 0.01,
                 "action_noise": 0.01
