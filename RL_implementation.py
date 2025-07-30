@@ -5,6 +5,10 @@ import os
 import imageio
 from collections import deque
 from datetime import datetime
+import json
+
+# MLFLOW: Import the mlflow library
+import mlflow
 
 # Import custom modules for the robot simulation
 from arm_ik_model import RobotKinematics, Ring
@@ -54,6 +58,10 @@ class VideoRecorderCallback(BaseCallback):
             imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
             print(f"--- Saving robot perspective video to {robot_vid_path} ---")
             imageio.mimwrite(robot_vid_path, [np.array(frame) for frame in robot_perspective_frames], fps=30, format='FFMPEG')
+
+            # MLFLOW: Log the generated videos as artifacts
+            mlflow.log_artifact(overview_vid_path, artifact_path="replays")
+            mlflow.log_artifact(robot_vid_path, artifact_path="replays")
         return True
 
     def record_performance(self, model, n_episodes=5, prefix="final"):
@@ -78,12 +86,16 @@ class VideoRecorderCallback(BaseCallback):
         print(f"--- Saving robot perspective video to {robot_vid_path} ---")
         imageio.mimwrite(robot_vid_path, [np.array(frame) for frame in robot_perspective_frames], fps=30, format='FFMPEG')
 
+        # MLFLOW: Log the final videos as artifacts
+        mlflow.log_artifact(overview_vid_path, artifact_path="replays")
+        mlflow.log_artifact(robot_vid_path, artifact_path="replays")
+
 # ==================================================================================
 # == Custom Metrics Callback                                                      ==
 # ==================================================================================
 class CustomMetricsCallback(BaseCallback):
     """
-    A custom callback to log domain-specific metrics to TensorBoard.
+    A custom callback to log domain-specific metrics to TensorBoard and MLflow.
     """
     def __init__(self, verbose=0):
         super().__init__(verbose)
@@ -102,38 +114,59 @@ class CustomMetricsCallback(BaseCallback):
             
             # --- Success Rate: Proportion of successful episodes ---
             self.success_rate_window.append(info.get("is_success", 0))
-            self.logger.record("custom/success_rate", np.mean(self.success_rate_window))
+            success_rate = np.mean(self.success_rate_window)
+            self.logger.record("custom/success_rate", success_rate)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/success_rate", success_rate, step=self.num_timesteps)
 
             # --- Collision Rate: Proportion of episodes with at least one collision ---
             had_collision = 1 if info.get("is_collision", 0) > 0 else 0
             self.collision_episode_window.append(had_collision)
-            self.logger.record("custom/collision_rate", np.mean(self.collision_episode_window))
+            collision_rate = np.mean(self.collision_episode_window)
+            self.logger.record("custom/collision_rate", collision_rate)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/collision_rate", collision_rate, step=self.num_timesteps)
 
             # --- Invalid Move Proportion: Proportion of steps in an episode that were invalid moves ---
             num_invalid_moves = info.get("is_invalid_move", 0)
             invalid_move_prop = num_invalid_moves / ep_len if ep_len > 0 else 0
             self.invalid_move_prop_window.append(invalid_move_prop)
-            self.logger.record("custom/invalid_move_proportion", np.mean(self.invalid_move_prop_window))
+            avg_invalid_prop = np.mean(self.invalid_move_prop_window)
+            self.logger.record("custom/invalid_move_proportion", avg_invalid_prop)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/invalid_move_proportion", avg_invalid_prop, step=self.num_timesteps)
 
             # --- Failed Grip Rate: Proportion of grip attempts that fail ---
             total_grip_attempts = info.get("grip_attempts", 0)
             total_failed_grips = info.get("failed_grips", 0)
             failure_rate = total_failed_grips / total_grip_attempts if total_grip_attempts > 0 else 0.0
             self.failed_grip_rate_window.append(failure_rate)
-            self.logger.record("custom/failed_grip_rate", np.mean(self.failed_grip_rate_window))
+            avg_failed_grip = np.mean(self.failed_grip_rate_window)
+            self.logger.record("custom/failed_grip_rate", avg_failed_grip)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/failed_grip_rate", avg_failed_grip, step=self.num_timesteps)
 
             # --- Average Difficulty: The average spawn difficulty of episodes ---
             self.avg_difficulty_window.append(info.get("difficulty", 0))
-            self.logger.record("custom/avg_difficulty", np.mean(self.avg_difficulty_window))
+            avg_difficulty = np.mean(self.avg_difficulty_window)
+            self.logger.record("custom/avg_difficulty", avg_difficulty)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/avg_difficulty", avg_difficulty, step=self.num_timesteps)
 
             # --- Ellipse Visible & Calculable Proportions ---
             visible_steps = info.get("visible_steps", 0)
             self.ellipse_visible_prop_window.append(visible_steps / ep_len if ep_len > 0 else 0)
-            self.logger.record("custom/ellipse_visible_proportion", np.mean(self.ellipse_visible_prop_window))
+            avg_visible_prop = np.mean(self.ellipse_visible_prop_window)
+            self.logger.record("custom/ellipse_visible_proportion", avg_visible_prop)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/ellipse_visible_proportion", avg_visible_prop, step=self.num_timesteps)
 
             calculable_steps = info.get("calculable_steps", 0)
             self.ellipse_calculable_prop_window.append(calculable_steps / ep_len if ep_len > 0 else 0)
-            self.logger.record("custom/ellipse_calculable_proportion", np.mean(self.ellipse_calculable_prop_window))
+            avg_calculable_prop = np.mean(self.ellipse_calculable_prop_window)
+            self.logger.record("custom/ellipse_calculable_proportion", avg_calculable_prop)
+            # MLFLOW: Log metric to MLflow
+            mlflow.log_metric("custom/ellipse_calculable_proportion", avg_calculable_prop, step=self.num_timesteps)
 
         return True
 
@@ -159,6 +192,11 @@ class CurriculumTrainerCallback(BaseCallback):
                 if current_success_rate >= self.success_threshold:
                     if self.verbose > 0:
                         print(f"--- Curriculum Threshold Met! Success rate {current_success_rate:.2f} >= {self.success_threshold} ---")
+                    # Get the current difficulty before increasing it
+                    current_difficulty = self.training_env.env_method('get_difficulty_level')[0]
+                    # MLFLOW: Log the curriculum change as an event (metric)
+                    mlflow.log_metric("curriculum/difficulty_level_up", current_difficulty + 1, step=self.num_timesteps)
+                    
                     self.training_env.env_method('increase_difficulty')
                     self.last_difficulty_increase_step = self.n_calls
         return True
@@ -247,6 +285,9 @@ class CustomRobotEnv(gym.Env):
         self.robot.go_home()
         self.E1_normalization_factor = np.sum((self.robot.E1 - self.ideal_E1) ** 2) or 1.0
         self.quaternion_normalization_factor = 1.0  # Quaternions are already normalized
+
+    def get_difficulty_level(self):
+        return self.difficulty_level
 
     def increase_difficulty(self):
         if self.difficulty_level < len(self.curriculum_levels) - 1:
@@ -449,6 +490,17 @@ class CustomRobotEnv(gym.Env):
     def close(self):
         pass
 
+# MLFLOW: Helper function to flatten the config dictionary for logging
+def flatten_dict(d, parent_key='', sep='.'):
+    items = []
+    for k, v in d.items():
+        new_key = parent_key + sep + k if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
 # ==================================================================================
 # == Main Execution Block                                                         ==
 # ==================================================================================
@@ -512,85 +564,118 @@ if __name__ == '__main__':
     replays_path = os.path.join(run_output_dir, "replays")
     os.makedirs(replays_path, exist_ok=True)
 
-    MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps", "calculable_steps")
-    
-    # --- Environment Setup ---
-    train_env = CustomRobotEnv(render_mode=None, config=CONFIG["environment"])
-    train_env = Monitor(train_env, info_keywords=MONITOR_KEYWORDS)
-    
-    print("--- Checking the custom environment ---")
-    check_env(train_env)
-    print("--- Environment check passed! ---")
+    # MLFLOW: Start an MLflow Run. All subsequent logging will be associated with this run.
+    with mlflow.start_run(run_name=run_name):
+        print(f"--- MLflow Run Started (Run ID: {mlflow.active_run().info.run_id}) ---")
+        
+        # MLFLOW: Log tags for quick filtering in the UI
+        mlflow.set_tag("sb3.policy", CONFIG["training"]["ppo_policy"])
+        mlflow.set_tag("env.id", "CustomRobotEnv")
 
-    eval_env = None
-    needs_eval_env = record_while_training or evaluate_at_end or render_final_video
-    if needs_eval_env:
-        eval_env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
-        eval_env = Monitor(eval_env)
+        # MLFLOW: Log the entire configuration dictionary as parameters
+        flat_config = flatten_dict(CONFIG)
+        mlflow.log_params(flat_config)
+        
+        # MLFLOW: Also save the full config as a JSON artifact for easy viewing
+        config_path = os.path.join(run_output_dir, "config.json")
+        with open(config_path, 'w') as f:
+            json.dump(CONFIG, f, indent=4)
+        mlflow.log_artifact(config_path)
 
-    # --- Callback Setup ---
-    custom_metrics_callback = CustomMetricsCallback()
-    curriculum_callback = CurriculumTrainerCallback(
-        metrics_callback=custom_metrics_callback,
-        **CONFIG["callbacks"]["curriculum_trainer"]
-    )
-    active_callbacks = [custom_metrics_callback, curriculum_callback]
+        MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps", "calculable_steps")
+        
+        # --- Environment Setup ---
+        train_env = CustomRobotEnv(render_mode=None, config=CONFIG["environment"])
+        train_env = Monitor(train_env, info_keywords=MONITOR_KEYWORDS)
+        
+        print("--- Checking the custom environment ---")
+        check_env(train_env)
+        print("--- Environment check passed! ---")
 
-    if needs_eval_env:
-        video_callback = VideoRecorderCallback(
-            eval_env=eval_env, 
-            render_path=replays_path,
-            **CONFIG["callbacks"]["video_recorder"]
+        eval_env = None
+        needs_eval_env = record_while_training or evaluate_at_end or render_final_video
+        if needs_eval_env:
+            eval_env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
+            eval_env = Monitor(eval_env)
+
+        # --- Callback Setup ---
+        custom_metrics_callback = CustomMetricsCallback()
+        curriculum_callback = CurriculumTrainerCallback(
+            metrics_callback=custom_metrics_callback,
+            **CONFIG["callbacks"]["curriculum_trainer"]
         )
-        if record_while_training:
-            active_callbacks.append(video_callback)
+        active_callbacks = [custom_metrics_callback, curriculum_callback]
 
-    callback_list = CallbackList(active_callbacks)
+        if needs_eval_env:
+            video_callback = VideoRecorderCallback(
+                eval_env=eval_env, 
+                render_path=replays_path,
+                **CONFIG["callbacks"]["video_recorder"]
+            )
+            if record_while_training:
+                active_callbacks.append(video_callback)
 
-    # --- Agent Training ---
-    print("--- Training the agent ---")
-    model = PPO(
-        CONFIG["training"]["ppo_policy"], 
-        train_env, 
-        verbose=1, 
-        tensorboard_log=CONFIG["training"]["tensorboard_log_path"]
-    )
-    
-    model.learn(
-        total_timesteps=CONFIG["training"]["total_timesteps"], 
-        callback=callback_list, 
-        progress_bar=True,
-        tb_log_name=run_name
-    )
-    print("--- Training finished ---")
+        callback_list = CallbackList(active_callbacks)
 
-    # --- Save the Final Model ---
-    print(f"--- Saving the model to {model_save_path} ---")
-    model.save(model_save_path)
-    del model
-
-    # --- Load and Evaluate the Trained Model ---
-    print(f"--- Loading the model from {model_save_path} ---")
-    loaded_model = PPO.load(model_save_path)
-
-    if evaluate_at_end:
-        print("--- Evaluating policy ---")
-        mean_reward, std_reward = evaluate_policy(
-            loaded_model, 
-            eval_env, 
-            n_eval_episodes=CONFIG["evaluation"]["n_eval_episodes"], 
-            deterministic=True
+        # --- Agent Training ---
+        print("--- Training the agent ---")
+        model = PPO(
+            CONFIG["training"]["ppo_policy"], 
+            train_env, 
+            verbose=1, 
+            tensorboard_log=CONFIG["training"]["tensorboard_log_path"]
         )
-        print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
-
-    if render_final_video:
-        print("--- Recording final performance of the trained agent ---")
-        video_callback.record_performance(
-            loaded_model, 
-            n_episodes=CONFIG["evaluation"]["n_video_episodes"], 
-            prefix="final"
+        
+        model.learn(
+            total_timesteps=CONFIG["training"]["total_timesteps"], 
+            callback=callback_list, 
+            progress_bar=True,
+            tb_log_name=run_name
         )
-    
-    train_env.close()
-    if eval_env:
-        eval_env.close()
+        print("--- Training finished ---")
+
+        # --- Save the Final Model ---
+        print(f"--- Saving the model to {model_save_path} ---")
+        model.save(model_save_path)
+        
+        # MLFLOW: Log the final model and the TensorBoard logs as artifacts
+        print("--- Logging final artifacts to MLflow ---")
+        mlflow.log_artifact(model_save_path, artifact_path="model")
+        tensorboard_log_dir = os.path.join(CONFIG["training"]["tensorboard_log_path"], run_name)
+        if os.path.exists(tensorboard_log_dir):
+            mlflow.log_artifacts(tensorboard_log_dir, artifact_path="tensorboard")
+        
+        del model
+
+        # --- Load and Evaluate the Trained Model ---
+        print(f"--- Loading the model from {model_save_path} ---")
+        loaded_model = PPO.load(model_save_path)
+
+        if evaluate_at_end:
+            print("--- Evaluating policy ---")
+            mean_reward, std_reward = evaluate_policy(
+                loaded_model, 
+                eval_env, 
+                n_eval_episodes=CONFIG["evaluation"]["n_eval_episodes"], 
+                deterministic=True
+            )
+            print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+            # MLFLOW: Log the final evaluation metrics
+            mlflow.log_metric("eval/mean_reward", mean_reward)
+            mlflow.log_metric("eval/std_reward", std_reward)
+
+        if render_final_video:
+            print("--- Recording final performance of the trained agent ---")
+            # The record_performance method now automatically logs to MLflow
+            video_callback.record_performance(
+                loaded_model, 
+                n_episodes=CONFIG["evaluation"]["n_video_episodes"], 
+                prefix="final"
+            )
+        
+        train_env.close()
+        if eval_env:
+            eval_env.close()
+        
+        print(f"--- MLflow Run Finished ---")
+        print(f"To view results, run 'mlflow ui' in your terminal.")
