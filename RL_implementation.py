@@ -4,12 +4,16 @@ import numpy as np
 import os
 import imageio
 import tempfile
+import glob
 from collections import deque
 from datetime import datetime
 import json
 
 # MLFLOW: Import the mlflow library
 import mlflow
+
+# Set MLflow tracking URI to avoid OneDrive permission issues
+mlflow.set_tracking_uri("file:///C:/temp/mlruns")
 
 # Import custom modules for the robot simulation
 from arm_ik_model import RobotKinematics, Ring
@@ -52,10 +56,12 @@ class VideoRecorderCallback(BaseCallback):
             
             # Use temporary files that get deleted after MLflow logging
             import tempfile
-            with tempfile.NamedTemporaryFile(suffix=f"_step_{self.n_calls}_overview.mp4", delete=False) as tmp_overview:
-                overview_vid_path = tmp_overview.name
-            with tempfile.NamedTemporaryFile(suffix=f"_step_{self.n_calls}_robot.mp4", delete=False) as tmp_robot:
-                robot_vid_path = tmp_robot.name
+            import os
+            temp_dir = "C:/temp/artifacts"
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            overview_vid_path = os.path.join(temp_dir, f"step_{self.n_calls}_overview.mp4")
+            robot_vid_path = os.path.join(temp_dir, f"step_{self.n_calls}_robot.mp4")
             
             print(f"--- Saving overview video to {overview_vid_path} ---")
             imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
@@ -87,10 +93,12 @@ class VideoRecorderCallback(BaseCallback):
             
         # Use temporary files
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=f"_{prefix}_replay_overview.mp4", delete=False) as tmp_overview:
-            overview_vid_path = tmp_overview.name
-        with tempfile.NamedTemporaryFile(suffix=f"_{prefix}_replay_robot.mp4", delete=False) as tmp_robot:
-            robot_vid_path = tmp_robot.name
+        import os
+        temp_dir = "C:/temp/artifacts"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        overview_vid_path = os.path.join(temp_dir, f"{prefix}_replay_overview.mp4")
+        robot_vid_path = os.path.join(temp_dir, f"{prefix}_replay_robot.mp4")
         
         print(f"--- Saving overview video to {overview_vid_path} ---")
         imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
@@ -544,7 +552,6 @@ if __name__ == '__main__':
     print("--- Runtime Configuration ---")
     run_name_input = input("Enter a name for this training run (or press Enter for default): ")
     record_while_training = input("Record performance videos during training? (y/n): ").lower() == 'y'
-    evaluate_at_end = input("Evaluate the final model after training? (y/n): ").lower() == 'y'
     render_final_video = input("Render a final performance video after training? (y/n): ").lower() == 'y'
     print("-----------------------------")
 
@@ -565,9 +572,11 @@ if __name__ == '__main__':
         mlflow.log_params(flat_config)
         
         # MLFLOW: Also save the full config as a JSON artifact for easy viewing
-        with tempfile.NamedTemporaryFile(mode='w', suffix='_config.json', delete=False) as tmp_config:
-            json.dump(CONFIG, tmp_config, indent=4)
-            config_path = tmp_config.name
+        temp_dir = "C:/temp/artifacts"
+        os.makedirs(temp_dir, exist_ok=True)
+        config_path = os.path.join(temp_dir, f"config_{run_name}.json")
+        with open(config_path, 'w') as f:
+            json.dump(CONFIG, f, indent=4)
         mlflow.log_artifact(config_path)
         os.unlink(config_path)  # Clean up temp file
 
@@ -582,7 +591,7 @@ if __name__ == '__main__':
         print("--- Environment check passed! ---")
 
         eval_env = None
-        needs_eval_env = record_while_training or evaluate_at_end or render_final_video
+        needs_eval_env = record_while_training or render_final_video
         if needs_eval_env:
             eval_env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
             eval_env = Monitor(eval_env)
@@ -640,8 +649,9 @@ if __name__ == '__main__':
         print("--- Training finished ---")
 
         # --- Save the Final Model ---
-        with tempfile.NamedTemporaryFile(suffix='_ppo_model.zip', delete=False) as tmp_model:
-            model_save_path = tmp_model.name
+        temp_dir = "C:/temp/artifacts"
+        os.makedirs(temp_dir, exist_ok=True)
+        model_save_path = os.path.join(temp_dir, f"ppo_model_{run_name}.zip")
         
         print(f"--- Saving the model to {model_save_path} ---")
         model.save(model_save_path)
@@ -656,48 +666,22 @@ if __name__ == '__main__':
         tensorboard_log_dir = os.path.join(CONFIG["training"]["tensorboard_log_path"], run_name)
         if os.path.exists(tensorboard_log_dir):
             mlflow.log_artifacts(tensorboard_log_dir, artifact_path="tensorboard")
-        
-        del model
-
-        # --- Load and Evaluate the Trained Model ---
-        # Download model from MLflow artifacts for evaluation
-        print("--- Downloading model from MLflow artifacts ---")
-        artifact_path = mlflow.get_artifact_uri("model")
-        model_files = mlflow.artifacts.list_artifacts("model")
-        model_file = next((f for f in model_files if f.path.endswith('.zip')), None)
-        
-        if model_file:
-            downloaded_model_path = mlflow.artifacts.download_artifacts(f"model/{model_file.path}")
-            print(f"--- Loading the model from {downloaded_model_path} ---")
-            loaded_model = PPO.load(downloaded_model_path)
-        else:
-            raise FileNotFoundError("Could not find model file in MLflow artifacts")
-
-        if evaluate_at_end:
-            print("--- Evaluating policy ---")
-            mean_reward, std_reward = evaluate_policy(
-                loaded_model, 
-                eval_env, 
-                n_eval_episodes=CONFIG["evaluation"]["n_eval_episodes"], 
-                deterministic=True
-            )
-            print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
-            # MLFLOW: Log the final evaluation metrics
-            mlflow.log_metric("eval/mean_reward", mean_reward)
-            mlflow.log_metric("eval/std_reward", std_reward)
 
         if render_final_video:
             print("--- Recording final performance of the trained agent ---")
             # The record_performance method now automatically logs to MLflow
             video_callback.record_performance(
-                loaded_model, 
+                model, 
                 n_episodes=CONFIG["evaluation"]["n_video_episodes"], 
                 prefix="final"
             )
+        
+        # Clean up model from memory
+        del model
         
         train_env.close()
         if eval_env:
             eval_env.close()
         
         print(f"--- MLflow Run Finished ---")
-        print(f"To view results, run 'mlflow ui' in your terminal.")
+        print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
