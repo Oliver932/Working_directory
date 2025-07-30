@@ -2,18 +2,7 @@
     "training": {
         "total_timesteps": 30000,
         "ppo_policy": "MultiInputPolicy",
-        "tensorboard_log_path": "./outputs/tensorboard_logs/",
-        "verbose": 1,
-        "learning_rate": 3e-4,
-        "n_steps": 2048,
-        "batch_size": 64,
-        "n_epochs": 10,
-        "gamma": 0.99,
-        "gae_lambda": 0.95,
-        "clip_range": 0.2,
-        "ent_coef": 0.0,
-        "vf_coef": 0.5,
-        "max_grad_norm": 0.5
+        "verbose": 1
     },
     "evaluation": {
         "n_eval_episodes": 100,
@@ -85,23 +74,5 @@
         "custom_metrics": {
             "window_size": 100
         }
-    },
-    "observation_space": {
-        "ellipse_position_bounds": [-5.0, 5.0],
-        "ellipse_vector_bounds": [-1.0, 1.0],
-        "actuator_bounds": [0.0, 1.0],
-        "delta_bounds": [-1.0, 1.0],
-        "E1_position_bounds": [-1.0, 1.0],
-        "delta_E1_bounds": [-3.14159, 3.14159],
-        "quaternion_bounds": [-1.0, 1.0],
-        "E1_normalization_factor": 400.0
-    },
-    "action_space": {
-        "bounds": [-1.0, 1.0],
-        "dimensions": 5
-    },
-    "rendering": {
-        "fps": 30,
-        "video_format": "FFMPEG"
     }
 }

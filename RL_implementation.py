@@ -139,16 +139,12 @@ class CustomMetricsCallback(BaseCallback):
             self.success_rate_window.append(info.get("is_success", 0))
             success_rate = np.mean(self.success_rate_window)
             self.logger.record("custom/success_rate", success_rate)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/success_rate", success_rate, step=self.num_timesteps)
 
             # --- Collision Rate: Proportion of episodes with at least one collision ---
             had_collision = 1 if info.get("is_collision", 0) > 0 else 0
             self.collision_episode_window.append(had_collision)
             collision_rate = np.mean(self.collision_episode_window)
             self.logger.record("custom/collision_rate", collision_rate)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/collision_rate", collision_rate, step=self.num_timesteps)
 
             # --- Invalid Move Proportion: Proportion of steps in an episode that were invalid moves ---
             num_invalid_moves = info.get("is_invalid_move", 0)
@@ -156,8 +152,6 @@ class CustomMetricsCallback(BaseCallback):
             self.invalid_move_prop_window.append(invalid_move_prop)
             avg_invalid_prop = np.mean(self.invalid_move_prop_window)
             self.logger.record("custom/invalid_move_proportion", avg_invalid_prop)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/invalid_move_proportion", avg_invalid_prop, step=self.num_timesteps)
 
             # --- Failed Grip Rate: Proportion of grip attempts that fail ---
             total_grip_attempts = info.get("grip_attempts", 0)
@@ -166,30 +160,22 @@ class CustomMetricsCallback(BaseCallback):
             self.failed_grip_rate_window.append(failure_rate)
             avg_failed_grip = np.mean(self.failed_grip_rate_window)
             self.logger.record("custom/failed_grip_rate", avg_failed_grip)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/failed_grip_rate", avg_failed_grip, step=self.num_timesteps)
 
             # --- Average Difficulty: The average spawn difficulty of episodes ---
             self.avg_difficulty_window.append(info.get("difficulty", 0))
             avg_difficulty = np.mean(self.avg_difficulty_window)
             self.logger.record("custom/avg_difficulty", avg_difficulty)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/avg_difficulty", avg_difficulty, step=self.num_timesteps)
 
             # --- Ellipse Visible & Calculable Proportions ---
             visible_steps = info.get("visible_steps", 0)
             self.ellipse_visible_prop_window.append(visible_steps / ep_len if ep_len > 0 else 0)
             avg_visible_prop = np.mean(self.ellipse_visible_prop_window)
             self.logger.record("custom/ellipse_visible_proportion", avg_visible_prop)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/ellipse_visible_proportion", avg_visible_prop, step=self.num_timesteps)
 
             calculable_steps = info.get("calculable_steps", 0)
             self.ellipse_calculable_prop_window.append(calculable_steps / ep_len if ep_len > 0 else 0)
             avg_calculable_prop = np.mean(self.ellipse_calculable_prop_window)
             self.logger.record("custom/ellipse_calculable_proportion", avg_calculable_prop)
-            # MLFLOW: Log metric to MLflow
-            mlflow.log_metric("custom/ellipse_calculable_proportion", avg_calculable_prop, step=self.num_timesteps)
 
         return True
 
@@ -217,8 +203,8 @@ class CurriculumTrainerCallback(BaseCallback):
                         print(f"--- Curriculum Threshold Met! Success rate {current_success_rate:.2f} >= {self.success_threshold} ---")
                     # Get the current difficulty before increasing it
                     current_difficulty = self.training_env.env_method('get_difficulty_level')[0]
-                    # MLFLOW: Log the curriculum change as an event (metric)
-                    mlflow.log_metric("curriculum/difficulty_level_up", current_difficulty + 1, step=self.num_timesteps)
+                    # Log curriculum change to TensorBoard (will be imported to MLflow later)
+                    self.logger.record("curriculum/difficulty_level_up", current_difficulty + 1)
                     
                     self.training_env.env_method('increase_difficulty')
                     self.last_difficulty_increase_step = self.n_calls
@@ -535,6 +521,51 @@ def flatten_dict(d, parent_key='', sep='.'):
             items.append((new_key, v))
     return dict(items)
 
+def import_tensorboard_to_mlflow(tensorboard_log_dir):
+    """Import TensorBoard event files to MLflow metrics."""
+    try:
+        print("--- Importing TensorBoard metrics to MLflow ---")
+        
+        # Try TensorBoard package first (lighter dependency, comes with Stable Baselines3)
+        try:
+            from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+            
+            event_files = glob.glob(os.path.join(tensorboard_log_dir, "**", "events.out.tfevents.*"), recursive=True)
+            
+            if not event_files:
+                print("No TensorBoard event files found!")
+                return
+            
+            total_metrics = 0
+            for event_file in event_files:
+                try:
+                    ea = EventAccumulator(event_file)
+                    ea.Reload()
+                    
+                    # Get scalar summaries
+                    scalar_tags = ea.Tags().get('scalars', [])
+                    
+                    for tag in scalar_tags:
+                        scalar_events = ea.Scalars(tag)
+                        for event in scalar_events:
+                            metric_name = f"tb_{tag.replace('/', '_')}"
+                            mlflow.log_metric(metric_name, event.value, step=event.step)
+                            total_metrics += 1
+                            
+                except Exception as e:
+                    print(f"Error processing {event_file}: {e}")
+                    continue
+                        
+            print(f"--- Successfully imported {total_metrics} TensorBoard metrics from {len(event_files)} files ---")
+            
+        except ImportError:
+            print("TensorBoard package not available for metric import.")
+            print("To enable TensorBoard metric import, install: pip install tensorboard")
+            
+    except Exception as e:
+        print(f"Warning: Could not import TensorBoard metrics: {e}")
+        print("TensorBoard artifacts will still be available in MLflow for manual viewing.")
+
 # ==================================================================================
 # == Main Execution Block                                                         ==
 # ==================================================================================
@@ -555,9 +586,8 @@ if __name__ == '__main__':
     render_final_video = input("Render a final performance video after training? (y/n): ").lower() == 'y'
     print("-----------------------------")
 
-    # --- Generate Unique Paths for This Run ---
-    time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{run_name_input}_{time_str}" if run_name_input else f"PPO_{time_str}"
+    # --- Generate Run Name ---
+    run_name = run_name_input if run_name_input else "PPO_training"
 
     # MLFLOW: Start an MLflow Run. All subsequent logging will be associated with this run.
     with mlflow.start_run(run_name=run_name):
@@ -619,24 +649,16 @@ if __name__ == '__main__':
         # --- Agent Training ---
         print("--- Training the agent ---")
         
-        # Extract PPO hyperparameters from config
+        # Set TensorBoard log path to temp directory to avoid OneDrive issues
+        tensorboard_temp_path = "C:/temp/tensorboard_logs"
+        
+        # Use default PPO hyperparameters for simplicity
         ppo_kwargs = {
             "policy": CONFIG["training"]["ppo_policy"],
             "env": train_env,
             "verbose": CONFIG["training"].get("verbose", 1),
-            "tensorboard_log": CONFIG["training"]["tensorboard_log_path"]
+            "tensorboard_log": tensorboard_temp_path
         }
-        
-        # Add optional PPO parameters if they exist in config
-        optional_params = [
-            "learning_rate", "n_steps", "batch_size", "n_epochs", 
-            "gamma", "gae_lambda", "clip_range", "ent_coef", 
-            "vf_coef", "max_grad_norm"
-        ]
-        
-        for param in optional_params:
-            if param in CONFIG["training"]:
-                ppo_kwargs[param] = CONFIG["training"][param]
         
         model = PPO(**ppo_kwargs)
         
@@ -663,10 +685,20 @@ if __name__ == '__main__':
         # Clean up temporary model file
         os.unlink(model_save_path)
         
-        tensorboard_log_dir = os.path.join(CONFIG["training"]["tensorboard_log_path"], run_name)
-        if os.path.exists(tensorboard_log_dir):
+        # Log TensorBoard artifacts and import metrics to MLflow
+        tensorboard_log_dir = None
+        if os.path.exists(tensorboard_temp_path):
+            # Search for directories that start with the run name (PPO adds suffixes like _1)
+            for item in os.listdir(tensorboard_temp_path):
+                item_path = os.path.join(tensorboard_temp_path, item)
+                if os.path.isdir(item_path) and item.startswith(run_name):
+                    tensorboard_log_dir = item_path
+                    break
+        
+        if tensorboard_log_dir and os.path.exists(tensorboard_log_dir):
             mlflow.log_artifacts(tensorboard_log_dir, artifact_path="tensorboard")
-
+            import_tensorboard_to_mlflow(tensorboard_log_dir)
+        
         if render_final_video:
             print("--- Recording final performance of the trained agent ---")
             # The record_performance method now automatically logs to MLflow
