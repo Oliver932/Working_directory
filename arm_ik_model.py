@@ -176,14 +176,9 @@ class RobotKinematics:
         return params
 
     def _initialize_bounds(self):
-        """Initialize workspace bounds from parameters."""
-        if 'xy_bounds' in self.params:
-            self.xy_bounds = self.params['xy_bounds']
-            self.x_lower, self.x_upper = self.xy_bounds['x']
-            self.y_lower, self.y_upper = self.xy_bounds['y']
-        else:
-            self.xy_bounds = None
-            self.x_lower = self.x_upper = self.y_lower = self.y_upper = 0.0
+        """Initialize reachable radius for random pose generation."""
+        # Load reachable radius for random pose generation
+        self.reachable_radius = self.params.get('reachable_radius', 100.0)
 
     def _initialize_state_arrays(self, extensions):
         """Initialize all state arrays with proper dtypes."""
@@ -717,89 +712,95 @@ class RobotKinematics:
         
         return True, "Move successful", actuator_delta
 
-    def set_random_e1_pose(self, difficulty=None, max_attempts=30):
+    def set_random_e1_pose(self, min_difficulty=0, max_difficulty=1, max_attempts=30):
         """
         Set robot to a random E1 pose within workspace bounds and tilt limits.
 
-        Generates random poses by distributing difficulty across x, y, rx, and rz dimensions.
-        Each variable is linearly interpolated from the center of its valid range.
-        If generation fails, falls back to center pose.
+        Generates random poses using circular radius around home position for XY,
+        and independent random tilts. Difficulty is randomly chosen between min and max bounds.
 
         Args:
-            difficulty (float, optional): Difficulty level in [0, 1].
-                - 0: Pose at center with no tilt
-                - 1: Anywhere within bounds with full tilt
-                - None: Random difficulty for each parameter
-            max_attempts (int): Maximum random samples before fallback to center.
+            min_difficulty (float, optional): Minimum difficulty level in [0, 1].
+            max_difficulty (float, optional): Maximum difficulty level in [0, 1].
+                - If both None: Each parameter gets completely random difficulty [0, 1]
+                - 0: Pose at home position with no tilt
+                - 1: Up to reachable_radius with full tilt range
+            max_attempts (int): Maximum random samples before fallback to home.
 
         Returns:
             tuple: (success_flag, pose_dict, actual_difficulty)
                 - success_flag (bool): True if valid pose was found
                 - pose_dict (dict): Final pose {'x', 'y', 'rx', 'rz'}
                 - actual_difficulty (float): Calculated difficulty of resulting pose
-
-        Raises:
-            ValueError: If xy_bounds not defined in robot configuration.
         """
-        if self.xy_bounds is None:
-            raise ValueError("No xy_bounds found in robot_config.yaml.")
 
-        # Cache limits and ranges for efficiency
+        # Cache limits and home position
         rx_lim = self.params.get('tilt_rx_limit_deg', 0.0)
         rz_lim = self.params.get('tilt_rz_limit_deg', 0.0)
-        x_center = (self.x_lower + self.x_upper) * 0.5
-        y_center = (self.y_lower + self.y_upper) * 0.5
-        x_range = (self.x_upper - self.x_lower) * 0.5
-        y_range = (self.y_upper - self.y_lower) * 0.5
+        x_home = self.E1_home_x
+        y_home = self.E1_home_y
+        
+        # Use reachable radius from config
+        max_radius = self.reachable_radius
 
         for _ in range(max_attempts):
-            # Generate difficulty factors for each dimension
-            if difficulty is None:
-                d_x, d_y, d_rx, d_rz = np.random.rand(4)
-            else:
-                # Distribute total difficulty among dimensions
-                portions = np.random.dirichlet([1, 1, 1, 1])
-                d_x, d_y, d_rx, d_rz = portions * difficulty * 4
 
-            # Generate random pose with random signs
-            signs = np.random.choice([-1, 1], size=4)
-            x = x_center + signs[0] * d_x * x_range
-            y = y_center + signs[1] * d_y * y_range
-            rx = signs[2] * d_rx * rx_lim
-            rz = signs[3] * d_rz * rz_lim
+            # Random difficulty for each parameter independently
+            d_radius = np.random.rand()
+            d_rx = np.random.rand()
+            d_rz = np.random.rand()
+
+            # Generate random position in circular pattern around home
+            if d_radius > 0:
+                # Random angle and radius within circular bounds
+                angle = np.random.uniform(0, 2 * np.pi)
+                radius = d_radius * max_radius
+                x = x_home + radius * np.cos(angle)
+                y = y_home + radius * np.sin(angle)
+            else:
+                # Stay at home position
+                x, y = x_home, y_home
+
+            # Generate random tilts with random signs
+            rx = np.random.choice([-1, 1]) * d_rx * rx_lim
+            rz = np.random.choice([-1, 1]) * d_rz * rz_lim
 
             # Test pose validity
             e1_position = np.array([x, y, 0], dtype=np.float32)
             if self.update_from_e1_pose(e1_position, rx, rz):
                 # Calculate actual difficulty of successful pose
-                actual_difficulty = self._calculate_pose_difficulty(
-                    x, y, rx, rz, x_center, y_center, x_range, y_range, rx_lim, rz_lim
+                actual_difficulty = self._calculate_pose_difficulty_circular(
+                    x, y, rx, rz, x_home, y_home, max_radius, rx_lim, rz_lim
                 )
                 pose = {'x': x, 'y': y, 'rx': rx, 'rz': rz}
                 return True, pose, actual_difficulty
 
-        # Fallback to center pose
-        return self._fallback_to_center_pose(x_center, y_center)
+        # Fallback to home pose
+        return self._fallback_to_home_pose(x_home, y_home)
 
-    def _calculate_pose_difficulty(self, x, y, rx, rz, x_center, y_center, x_range, y_range, rx_lim, rz_lim):
-        """Calculate normalized difficulty of a pose."""
-        d_x_norm = abs((x - x_center) / x_range) if x_range > 0 else 0.0
-        d_y_norm = abs((y - y_center) / y_range) if y_range > 0 else 0.0
+    def _calculate_pose_difficulty_circular(self, x, y, rx, rz, x_home, y_home, max_radius, rx_lim, rz_lim):
+        """Calculate normalized difficulty of a pose using circular distance and independent tilts."""
+        # Calculate circular distance from home position
+        distance = np.sqrt((x - x_home)**2 + (y - y_home)**2)
+        d_radius_norm = distance / max_radius if max_radius > 0 else 0.0
+        
+        # Calculate normalized tilt difficulties
         d_rx_norm = abs(rx) / rx_lim if rx_lim > 0 else 0.0
         d_rz_norm = abs(rz) / rz_lim if rz_lim > 0 else 0.0
         
-        return (d_x_norm + d_y_norm + d_rx_norm + d_rz_norm) * 0.25
+        # Average of the three independent difficulty components
+        return (d_radius_norm + d_rx_norm + d_rz_norm) / 3.0
 
-    def _fallback_to_center_pose(self, x_center, y_center):
-        """Attempt to fall back to center pose if random generation fails."""
-        e1_center = np.array([x_center, y_center, 0], dtype=np.float32)
-        center_pose = {'x': x_center, 'y': y_center, 'rx': 0, 'rz': 0}
+    def _fallback_to_home_pose(self, x_home, y_home):
+        """Attempt to fall back to home pose if random generation fails."""
+        e1_home = np.array([x_home, y_home, 0], dtype=np.float32)
+        home_pose = {'x': x_home, 'y': y_home, 'rx': 0, 'rz': 0}
         
-        if self.update_from_e1_pose(e1_center, 0, 0):
-            return True, center_pose, 0.0
+        if self.update_from_e1_pose(e1_home, 0, 0):
+            return True, home_pose, 0.0
         else:
-            # Even center pose failed
-            return False, center_pose, 0.0
+            # Even home pose failed
+            return False, home_pose, 0.0
 
     def _get_extension_from_attachment(self, A_pos, actuator_key):
         """
@@ -908,7 +909,7 @@ if __name__ == '__main__':
 
     print("\n--- Test Case 3: Random pose generation ---")
     ring = None
-    success, pose, difficulty = robot.set_random_e1_pose(difficulty=1.0)
+    success, pose, difficulty = robot.set_random_e1_pose(min_difficulty=0.5, max_difficulty=1.0)
     if success:
         print(f"Random pose: {pose}, difficulty: {difficulty:.3f}")
         ring = robot.create_ring()

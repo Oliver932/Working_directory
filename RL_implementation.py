@@ -277,10 +277,11 @@ class CustomRobotEnv(gym.Env):
         self.E1_normalization_factor, self.quaternion_normalization_factor = 1.0, 1.0
 
     def _setup_episode(self):
-        # Set the robot to a random pose with a difficulty sampled uniformly
-        # from the min to the max range for the current curriculum level.
-        self.episode_difficulty = np.random.uniform(self.pose_range_min, self.pose_range_max)
-        self.robot.set_random_e1_pose(difficulty=self.episode_difficulty)
+        # Set the robot to a random pose with difficulty bounds from the current curriculum level.
+        success, pose, actual_difficulty = self.robot.set_random_e1_pose(min_difficulty=self.pose_range_min, max_difficulty=self.pose_range_max)
+        
+        # Use the actual calculated difficulty for logging purposes
+        self.episode_difficulty = actual_difficulty
         
         self.ring = self.robot.create_ring(ring=self.ring)
         self.ideal_E1 = self.robot.E1.copy()

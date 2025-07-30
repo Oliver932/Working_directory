@@ -11,7 +11,7 @@ A_end:
   A4: [38.5, 0, 120.88]  # Actuator 4 end position [x, y, z]
 E1_home:
   x: 0         # Home E1 x position
-  y: 300       # Home E1 y position
+  y: 350       # Home E1 y position
   rx: 0        # Home E1 rotation about x (deg)
   rz: 0        # Home E1 rotation about z (deg)
 R1: 454                  # Length of linkage 1
@@ -34,7 +34,5 @@ tilt_rx_limit_deg: 14                   # Max tilt in x (deg)
 
 tilt_rz_limit_deg: 50                   # Max tilt in z (deg)
 
-# Rectangular bounds for possible E1 workspace (x, y)
-xy_bounds:
-  x: [ -70, 70 ]   # [lower, upper]
-  y: [ 350, 450 ]    # [lower, upper]
+# Reachable radius for random pose generation around home position
+reachable_radius: 80.0                 # Maximum circular radius from home position (mm)
