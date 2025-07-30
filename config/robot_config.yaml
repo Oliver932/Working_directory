@@ -1,0 +1,40 @@
+# Robot configuration parameters
+A_home:
+  A1: [-539.73, 0, 0]    # Actuator 1 home position [x, y, z]
+  A2: [539.73, 0, 0]     # Actuator 2 home position [x, y, z]
+  A3: [-38.5, 0, 520.88] # Actuator 3 home position [x, y, z]
+  A4: [38.5, 0, 520.88]  # Actuator 4 home position [x, y, z]
+A_end:
+  A1: [-139.73, 0, 0]    # Actuator 1 end position [x, y, z]
+  A2: [139.73, 0, 0]     # Actuator 2 end position [x, y, z]
+  A3: [-38.5, 0, 120.88] # Actuator 3 end position [x, y, z]
+  A4: [38.5, 0, 120.88]  # Actuator 4 end position [x, y, z]
+E1_home:
+  x: 0         # Home E1 x position
+  y: 300       # Home E1 y position
+  rx: 0        # Home E1 rotation about x (deg)
+  rz: 0        # Home E1 rotation about z (deg)
+R1: 454                  # Length of linkage 1
+R2: 464                  # Length of linkage 2
+C_local:
+  C1: [-96.5205, 0, 0]   # End-effector point 1 [x, y, z]
+  C2: [96.5205, 0, 0]    # End-effector point 2 [x, y, z]
+  C3: [-38.5, 0, 65.5]   # End-effector point 3 [x, y, z]
+  C4: [38.5, 0, 65.5]    # End-effector point 4 [x, y, z]
+G_local: [115.0, 115.0, 0.0] # Gripper reference point [x, y, z]
+grab_points_local:
+  outer_grip_point: [3, 0, -36]         # Outer grip point [approach, tangential, radial]
+  inner_grip_point_1: [4, 50, 46.5]     # Inner grip point 1 [approach, tangential, radial]
+  inner_grip_point_2: [4, -50, 46.5]    # Inner grip point 2 [approach, tangential, radial]
+  gripper_back: [-38.5, 0, 0]           # Gripper back [approach, tangential, radial]
+camera_params:
+  local_pos_offset: [-30, 0, 0]         # Camera offset from G1 [approach, tangential, radial]
+  local_rotation_deg: [0, 0, 0]         # Camera rotation [rx, ry, rz] in degrees
+tilt_rx_limit_deg: 14                   # Max tilt in x (deg)
+
+tilt_rz_limit_deg: 50                   # Max tilt in z (deg)
+
+# Rectangular bounds for possible E1 workspace (x, y)
+xy_bounds:
+  x: [ -70, 70 ]   # [lower, upper]
+  y: [ 350, 450 ]    # [lower, upper]

@@ -1,0 +1,6 @@
+# Ring configuration parameters
+outer_radius: 192.0         # Outer radius of the ring
+middle_radius: 141.5        # Middle radius of the ring
+inner_radius: 132.5         # Inner radius of the ring
+outer_thickness: 6.0        # Thickness at the outer radius
+inner_thickness: 26.0       # Thickness at the inner radius
