@@ -10,8 +10,8 @@ A_end:
   A3: [-38.5, 0, 120.88] # Actuator 3 end position [x, y, z]
   A4: [38.5, 0, 120.88]  # Actuator 4 end position [x, y, z]
 E1_home:
-  x: 0         # Home E1 x position
-  y: 350       # Home E1 y position
+  x: -50         # Home E1 x position
+  y: 300       # Home E1 y position
   rx: 0        # Home E1 rotation about x (deg)
   rz: 0        # Home E1 rotation about z (deg)
 R1: 454                  # Length of linkage 1
