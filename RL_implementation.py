@@ -657,7 +657,16 @@ if __name__ == '__main__':
             env = Monitor(env, info_keywords=MONITOR_KEYWORDS)
             return env
         train_env = DummyVecEnv([make_env])
-        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10.)
+        
+        # Specify which observation keys to normalize (only Box spaces, not MultiBinary)
+        norm_obs_keys = [
+            "ellipse_position", "delta_ellipse_position",
+            "ellipse_semi_major_vector", "delta_ellipse_semi_major_vector", 
+            "ellipse_semi_minor_vector", "delta_ellipse_semi_minor_vector",
+            "actuator_extensions", "delta_extensions",
+            "E1_position", "delta_E1", "E1_quaternion", "delta_E1_quaternion"
+        ]
+        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., norm_obs_keys=norm_obs_keys)
 
         eval_env = None
         needs_eval_env = record_while_training or render_final_video
@@ -667,7 +676,7 @@ if __name__ == '__main__':
                 env = Monitor(env)
                 return env
             eval_env = DummyVecEnv([make_eval_env])
-            eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
+            eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10., norm_obs_keys=norm_obs_keys)
             # Synchronize statistics
             eval_env.obs_rms = train_env.obs_rms
 
