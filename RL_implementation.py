@@ -7,6 +7,7 @@ import glob
 from collections import deque
 import json
 import matplotlib.pyplot as plt
+import random
 
 # MLFLOW: Import the mlflow library
 import mlflow
@@ -33,21 +34,33 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 # ==================================================================================
 class VideoRecorderCallback(BaseCallback):
     """A custom callback for recording and saving evaluation videos as MP4 files."""
-    def __init__(self, eval_env: gym.Env, eval_freq: int, n_eval_episodes: int, verbose: int = 1):
+    def __init__(self, eval_env: gym.Env, eval_freq: int, n_eval_episodes: int, train_env=None, verbose: int = 1):
         super().__init__(verbose)
         self.eval_env = eval_env
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
+        self.train_env = train_env
+
+    def _sync_difficulty(self):
+        """Synchronize difficulty from training environment to evaluation environment."""
+        if self.train_env is not None:
+            # Get current difficulty from training environment
+            current_difficulty = self.train_env.env_method('get_difficulty')[0]
+            # Set the same difficulty in evaluation environment
+            self.eval_env.env_method('set_difficulty', current_difficulty)
+            print(f"--- Synced difficulty to evaluation environment: {current_difficulty:.2f} ---")
 
     def _on_step(self) -> bool:
         if self.n_calls > 0 and self.n_calls % self.eval_freq == 0:
+            # Sync difficulty from training to evaluation environment
+            self._sync_difficulty()
+            
             overview_frames, robot_perspective_frames = [], []
             print(f"--- Recording performance at step {self.n_calls} ---")
             for _ in range(self.n_eval_episodes):
                 obs = self.eval_env.reset()
                 done = [False]
                 while not done[0]:
-                    # Since the env is wrapped in a Monitor and DummyVecEnv, access the underlying env for render
                     overview_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='scene_overview'))
                     robot_perspective_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
                     action, _ = self.model.predict(obs, deterministic=True)
@@ -76,16 +89,18 @@ class VideoRecorderCallback(BaseCallback):
 
     def record_performance(self, model, n_episodes=5, prefix="final"):
         """A standalone method to record the performance of a trained model."""
+        # Sync difficulty from training to evaluation environment
+        self._sync_difficulty()
+        
         overview_frames, robot_perspective_frames = [], []
-        obs = self.eval_env.reset()
         for _ in range(n_episodes):
+            obs = self.eval_env.reset()
             done = [False]
             while not done[0]:
                 overview_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='scene_overview'))
                 robot_perspective_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
                 action, _ = model.predict(obs, deterministic=True)
                 obs, _, done, _ = self.eval_env.step(action)
-            obs = self.eval_env.reset()
             
         # Use temporary files
         temp_dir = "C:/temp/artifacts"
@@ -318,11 +333,10 @@ class CustomRobotEnv(gym.Env):
 
     def _setup_episode(self):
         # Set the robot to a random pose with difficulty from 0.0 to 1.0
-        success, pose, actual_difficulty = set_random_pose_box_constraint_fixed_rotation(self.robot, self.ring, self.collision_render_manager, difficulty=self.difficulty)
+        success, pose, actual_difficulty = set_random_pose_box_constraint(self.robot, self.ring, self.collision_render_manager, difficulty=self.difficulty)
 
         if not success:
             raise ValueError("Failed to set a valid random pose for the robot and ring. Please check the configuration and constraints.")
-
         
         # Use the actual calculated difficulty for logging purposes
         self.episode_difficulty = actual_difficulty
@@ -692,6 +706,7 @@ if __name__ == '__main__':
         if needs_eval_env:
             video_callback = VideoRecorderCallback(
                 eval_env=eval_env, 
+                train_env=train_env,
                 **CONFIG["callbacks"]["video_recorder"]
             )
             if record_while_training:

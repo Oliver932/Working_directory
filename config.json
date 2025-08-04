@@ -1,12 +1,12 @@
 {
     "training": {
-        "total_timesteps": 1000000,
+        "total_timesteps": 100000,
         "ppo_policy": "MultiInputPolicy",
         "verbose": 1
     },
     "evaluation": {
         "n_eval_episodes": 100,
-        "n_video_episodes": 4,
+        "n_video_episodes": 10,
         "deterministic": true
     },
     "environment": {
@@ -50,7 +50,7 @@
     },
     "callbacks": {
         "video_recorder": {
-            "eval_freq": 100000,
+            "eval_freq": 200000,
             "n_eval_episodes": 3
         },
         "curriculum_trainer": {
