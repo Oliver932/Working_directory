@@ -55,10 +55,12 @@
         },
         "curriculum_trainer": {
             "check_freq": 5000,
-            "target_success_rate": 0.95,
+            "increase_threshold": 0.90,
+            "decrease_threshold": 0.75,
             "difficulty_step": 0.01,
             "min_difficulty": 0.15,
             "max_difficulty": 1.0
+
         },
         "custom_metrics": {
             "window_size": 100

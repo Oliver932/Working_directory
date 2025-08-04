@@ -179,13 +179,14 @@ class CustomMetricsCallback(BaseCallback):
 class CurriculumTrainerCallback(BaseCallback):
     """
     A callback to implement curriculum learning. It adjusts the environment's
-    difficulty based on performance relative to a target success rate.
+    difficulty based on performance relative to two success rate thresholds.
     """
-    def __init__(self, metrics_callback: CustomMetricsCallback, target_success_rate: float, check_freq: int, 
+    def __init__(self, metrics_callback: CustomMetricsCallback, increase_threshold: float, decrease_threshold: float, check_freq: int, 
                  difficulty_step: float = 0.1, min_difficulty: float = 0.0, max_difficulty: float = 1.0, verbose: int = 1):
         super().__init__(verbose)
         self.metrics_callback = metrics_callback
-        self.target_success_rate = target_success_rate
+        self.increase_threshold = increase_threshold
+        self.decrease_threshold = decrease_threshold
         self.check_freq = check_freq
         self.difficulty_step = difficulty_step
         self.min_difficulty = min_difficulty
@@ -193,34 +194,40 @@ class CurriculumTrainerCallback(BaseCallback):
         self.last_difficulty_check_step = 0
 
     def _on_step(self) -> bool:
-        if (self.n_calls - self.last_difficulty_check_step) > self.check_freq:
-            if len(self.metrics_callback.success_rate_window) > 0:
-                current_success_rate = np.mean(self.metrics_callback.success_rate_window)
-                current_difficulty = self.training_env.env_method('get_difficulty')[0]
-                
-                if current_success_rate > self.target_success_rate:
-                    # Performance is too good, increase difficulty
-                    new_difficulty = min(current_difficulty + self.difficulty_step, self.max_difficulty)
-                    if new_difficulty != current_difficulty:
-                        self.training_env.env_method('set_difficulty', new_difficulty)
-                        if self.verbose > 0:
-                            print(f"--- Increasing Difficulty: Success rate {current_success_rate:.2f} > {self.target_success_rate:.2f}, "
-                                  f"difficulty {current_difficulty:.2f} -> {new_difficulty:.2f} ---")
-                        self.logger.record("curriculum/difficulty_increased", new_difficulty)
-                        
-                elif current_success_rate < self.target_success_rate:
-                    # Performance is too poor, decrease difficulty
-                    new_difficulty = max(current_difficulty - self.difficulty_step, self.min_difficulty)
-                    if new_difficulty != current_difficulty:
-                        self.training_env.env_method('set_difficulty', new_difficulty)
-                        if self.verbose > 0:
-                            print(f"--- Decreasing Difficulty: Success rate {current_success_rate:.2f} < {self.target_success_rate:.2f}, "
-                                  f"difficulty {current_difficulty:.2f} -> {new_difficulty:.2f} ---")
-                        self.logger.record("curriculum/difficulty_decreased", new_difficulty)
-                        
-                # Always log current difficulty level
-                self.logger.record("curriculum/current_difficulty", current_difficulty)
-                self.last_difficulty_check_step = self.n_calls
+        # Check if we should evaluate difficulty at the specified interval
+        if (self.n_calls - self.last_difficulty_check_step) >= self.check_freq and len(self.metrics_callback.success_rate_window) > 0:
+            current_success_rate = np.mean(self.metrics_callback.success_rate_window)
+            current_difficulty = self.training_env.env_method('get_difficulty')[0]
+            
+            if current_success_rate > self.increase_threshold:
+                # Performance is too good, increase difficulty
+                new_difficulty = min(current_difficulty + self.difficulty_step, self.max_difficulty)
+                if new_difficulty != current_difficulty:
+                    self.training_env.env_method('set_difficulty', new_difficulty)
+                    if self.verbose > 0:
+                        print(f"--- Increasing Difficulty: Success rate {current_success_rate:.2f} > {self.increase_threshold:.2f}, "
+                              f"difficulty {current_difficulty:.2f} -> {new_difficulty:.2f} ---")
+                    self.logger.record("curriculum/difficulty_increased", new_difficulty)
+                    
+            elif current_success_rate < self.decrease_threshold:
+                # Performance is too poor, decrease difficulty
+                new_difficulty = max(current_difficulty - self.difficulty_step, self.min_difficulty)
+                if new_difficulty != current_difficulty:
+                    self.training_env.env_method('set_difficulty', new_difficulty)
+                    if self.verbose > 0:
+                        print(f"--- Decreasing Difficulty: Success rate {current_success_rate:.2f} < {self.decrease_threshold:.2f}, "
+                              f"difficulty {current_difficulty:.2f} -> {new_difficulty:.2f} ---")
+                    self.logger.record("curriculum/difficulty_decreased", new_difficulty)
+            else:
+                # Performance is in the stable zone, no change needed
+                if self.verbose > 0:
+                    print(f"--- Difficulty Stable: Success rate {current_success_rate:.2f} between {self.decrease_threshold:.2f} and {self.increase_threshold:.2f}, "
+                          f"maintaining difficulty {current_difficulty:.2f} ---")
+                    
+            # Always log current difficulty level
+            self.logger.record("curriculum/current_difficulty", current_difficulty)
+            self.last_difficulty_check_step = self.n_calls
+            
         return True
 
 # ==================================================================================
@@ -288,7 +295,10 @@ class CustomRobotEnv(gym.Env):
         self.ring = Ring()
         
         # --- Difficulty Setup ---
-        self.difficulty = 0.0  # Start with easiest setting (0.0 to 1.0)
+        # Start with the minimum difficulty from curriculum config if available
+        curriculum_config = self.config.get("curriculum", {})
+        min_difficulty = curriculum_config.get("min_difficulty", 0.0)
+        self.difficulty = min_difficulty  # Start with minimum difficulty
         self._update_difficulty_settings()
 
         
@@ -636,7 +646,11 @@ if __name__ == '__main__':
         MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps", "calculable_steps")
         
         # --- Environment Setup ---
-        train_env = CustomRobotEnv(render_mode=None, config=CONFIG["environment"])
+        env_config = CONFIG["environment"].copy()
+        # Pass curriculum config to environment for initial difficulty setting
+        env_config["curriculum"] = CONFIG["callbacks"]["curriculum_trainer"]
+
+        train_env = CustomRobotEnv(render_mode=None, config=env_config)
         train_env = Monitor(train_env, info_keywords=MONITOR_KEYWORDS)
         
         print("--- Checking the custom environment ---")
