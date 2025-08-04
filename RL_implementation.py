@@ -18,6 +18,7 @@ from arm_ik_model import RobotKinematics, Ring
 from collision_and_render_management import CollisionAndRenderManager
 from ring_projector import RingProjector
 from overview_render_manager import OverviewRenderManager
+from ring_placement import set_random_pose_box_constraint
 
 # Import Stable Baselines3 components for reinforcement learning
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
@@ -177,30 +178,49 @@ class CustomMetricsCallback(BaseCallback):
 # ==================================================================================
 class CurriculumTrainerCallback(BaseCallback):
     """
-    A callback to implement curriculum learning. It increases the environment's
-    difficulty when the agent's performance meets a certain threshold.
+    A callback to implement curriculum learning. It adjusts the environment's
+    difficulty based on performance relative to a target success rate.
     """
-    def __init__(self, metrics_callback: CustomMetricsCallback, success_threshold: float, check_freq: int, verbose: int = 1):
+    def __init__(self, metrics_callback: CustomMetricsCallback, target_success_rate: float, check_freq: int, 
+                 difficulty_step: float = 0.1, min_difficulty: float = 0.0, max_difficulty: float = 1.0, verbose: int = 1):
         super().__init__(verbose)
         self.metrics_callback = metrics_callback
-        self.success_threshold = success_threshold
+        self.target_success_rate = target_success_rate
         self.check_freq = check_freq
-        self.last_difficulty_increase_step = 0
+        self.difficulty_step = difficulty_step
+        self.min_difficulty = min_difficulty
+        self.max_difficulty = max_difficulty
+        self.last_difficulty_check_step = 0
 
     def _on_step(self) -> bool:
-        if (self.n_calls - self.last_difficulty_increase_step) > self.check_freq:
+        if (self.n_calls - self.last_difficulty_check_step) > self.check_freq:
             if len(self.metrics_callback.success_rate_window) > 0:
                 current_success_rate = np.mean(self.metrics_callback.success_rate_window)
-                if current_success_rate >= self.success_threshold:
-                    if self.verbose > 0:
-                        print(f"--- Curriculum Threshold Met! Success rate {current_success_rate:.2f} >= {self.success_threshold} ---")
-                    # Get the current difficulty before increasing it
-                    current_difficulty = self.training_env.env_method('get_difficulty_level')[0]
-                    # Log curriculum change to TensorBoard (will be imported to MLflow later)
-                    self.logger.record("curriculum/difficulty_level_up", current_difficulty + 1)
-                    
-                    self.training_env.env_method('increase_difficulty')
-                    self.last_difficulty_increase_step = self.n_calls
+                current_difficulty = self.training_env.env_method('get_difficulty')[0]
+                
+                if current_success_rate > self.target_success_rate:
+                    # Performance is too good, increase difficulty
+                    new_difficulty = min(current_difficulty + self.difficulty_step, self.max_difficulty)
+                    if new_difficulty != current_difficulty:
+                        self.training_env.env_method('set_difficulty', new_difficulty)
+                        if self.verbose > 0:
+                            print(f"--- Increasing Difficulty: Success rate {current_success_rate:.2f} > {self.target_success_rate:.2f}, "
+                                  f"difficulty {current_difficulty:.2f} -> {new_difficulty:.2f} ---")
+                        self.logger.record("curriculum/difficulty_increased", new_difficulty)
+                        
+                elif current_success_rate < self.target_success_rate:
+                    # Performance is too poor, decrease difficulty
+                    new_difficulty = max(current_difficulty - self.difficulty_step, self.min_difficulty)
+                    if new_difficulty != current_difficulty:
+                        self.training_env.env_method('set_difficulty', new_difficulty)
+                        if self.verbose > 0:
+                            print(f"--- Decreasing Difficulty: Success rate {current_success_rate:.2f} < {self.target_success_rate:.2f}, "
+                                  f"difficulty {current_difficulty:.2f} -> {new_difficulty:.2f} ---")
+                        self.logger.record("curriculum/difficulty_decreased", new_difficulty)
+                        
+                # Always log current difficulty level
+                self.logger.record("curriculum/current_difficulty", current_difficulty)
+                self.last_difficulty_check_step = self.n_calls
         return True
 
 # ==================================================================================
@@ -222,7 +242,14 @@ class CustomRobotEnv(gym.Env):
         self.rewards = self.config["rewards"]
         self.multipliers = self.config["multipliers"]
         self.ellipse_scale_factor = self.config["ellipse_scale_factor"]
-        self.curriculum_levels = self.config["curriculum"]
+        
+        # Difficulty configuration
+        difficulty_config = self.config["difficulty"]
+        self.base_observation_noise = difficulty_config["base_observation_noise"]
+        self.base_action_noise = difficulty_config["base_action_noise"]
+        self.max_observation_noise = difficulty_config["max_observation_noise"]
+        self.max_action_noise = difficulty_config["max_action_noise"]
+        
         paths = self.config["paths"]
         camera_settings = self.config["camera"]
         overview_camera_settings = self.config["overview_camera"]
@@ -260,50 +287,60 @@ class CustomRobotEnv(gym.Env):
         self.robot = RobotKinematics(verbosity=robot_verbosity)
         self.ring = Ring()
         
-        # --- Curriculum and Noise Setup ---
-        self.difficulty_level = 0
-        self.pose_range_min = self.curriculum_levels[0]["pose_range_min"]
-        self.pose_range_max = self.curriculum_levels[0]["pose_range_max"]
-        self.observation_noise_std = self.curriculum_levels[0]["obs_noise"]
-        self.action_noise_std = self.curriculum_levels[0]["action_noise"]
+        # --- Difficulty Setup ---
+        self.difficulty = 0.0  # Start with easiest setting (0.0 to 1.0)
+        self._update_difficulty_settings()
 
-        self._setup_episode()
         
         self.ring_projector = RingProjector(self.robot, self.ring, vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"], method='custom')
         self.collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
         self.overview_render_manager = OverviewRenderManager(self.robot, self.ring, paths["ring_render"], width=overview_camera_settings["width"], height=overview_camera_settings["height"])
         
+        self._setup_episode()
+
         self.ideal_E1, self.ideal_E1_quaternion = None, None
         self.E1_normalization_factor, self.quaternion_normalization_factor = 1.0, 1.0
 
+    def _update_difficulty_settings(self):
+        """Update observation noise, action noise based on current difficulty (0.0 to 1.0)"""
+        self.observation_noise_std = self.base_observation_noise + (self.max_observation_noise - self.base_observation_noise) * self.difficulty
+        self.action_noise_std = self.base_action_noise + (self.max_action_noise - self.base_action_noise) * self.difficulty
+
     def _setup_episode(self):
-        # Set the robot to a random pose with difficulty bounds from the current curriculum level.
-        success, pose, actual_difficulty = self.robot.set_random_e1_pose(min_difficulty=self.pose_range_min, max_difficulty=self.pose_range_max)
+        # Set the robot to a random pose with difficulty from 0.0 to 1.0
+        success, pose, actual_difficulty = set_random_pose_box_constraint(self.robot, self.ring, self.collision_render_manager, difficulty=self.difficulty)
+
+        if not success:
+            raise ValueError("Failed to set a valid random pose for the robot and ring. Please check the configuration and constraints.")
+
         
         # Use the actual calculated difficulty for logging purposes
         self.episode_difficulty = actual_difficulty
-        
-        self.ring = self.robot.create_ring(ring=self.ring)
+
         self.ideal_E1 = self.robot.E1.copy()
         self.ideal_E1_quaternion = self.robot.E1_quaternion.copy()
-        self.robot.go_home()
         self.E1_normalization_factor = np.sum((self.robot.E1 - self.ideal_E1) ** 2) or 1.0
         self.quaternion_normalization_factor = 1.0  # Quaternions are already normalized
 
-    def get_difficulty_level(self):
-        return self.difficulty_level
+        self.robot.go_home()
+        self.collision_render_manager.update_poses(self.robot, self.ring)
+        self.ring_projector.update()
 
-    def increase_difficulty(self):
-        if self.difficulty_level < len(self.curriculum_levels) - 1:
-            self.difficulty_level += 1
-            level_settings = self.curriculum_levels[self.difficulty_level]
-            self.pose_range_min = level_settings["pose_range_min"]
-            self.pose_range_max = level_settings["pose_range_max"]
-            self.observation_noise_std = level_settings["obs_noise"]
-            self.action_noise_std = level_settings["action_noise"]
-            print(f"DIFFICULTY INCREASED TO LEVEL {self.difficulty_level}: pose_range=[{self.pose_range_min}, {self.pose_range_max}], obs_noise={self.observation_noise_std}, action_noise={self.action_noise_std}")
-        else:
-            print("MAX DIFFICULTY REACHED.")
+
+    def get_difficulty(self):
+        """Get the current difficulty level (0.0 to 1.0)"""
+        return self.difficulty
+
+    def set_difficulty(self, new_difficulty):
+        """Set the difficulty level (0.0 to 1.0) and update related parameters"""
+        self.difficulty = np.clip(new_difficulty, 0.0, 1.0)
+        self._update_difficulty_settings()
+        if hasattr(self, 'verbose') and getattr(self, 'verbose', 0) > 0:
+            print(f"DIFFICULTY SET TO {self.difficulty:.2f}: obs_noise={self.observation_noise_std:.3f}, action_noise={self.action_noise_std:.3f}")
+
+    def adjust_difficulty(self, delta):
+        """Adjust difficulty by a delta amount"""
+        self.set_difficulty(self.difficulty + delta)
 
     def _add_observation_noise(self, obs):
         if self.observation_noise_std > 0:
@@ -390,10 +427,7 @@ class CustomRobotEnv(gym.Env):
         self.previous_dist_quaternion = None
         
         self._setup_episode()
-        self.ring_projector.ring = self.ring
-        self.overview_render_manager.ring = self.ring
-        self.ring_projector.update()
-        self.collision_render_manager.update_poses(self.robot, self.ring)
+
         return self._get_obs(), {} # Return empty info dict on reset
 
     def step(self, action):

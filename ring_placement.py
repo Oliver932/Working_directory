@@ -25,7 +25,7 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     """
     # --- Testing over difficulty levels ---
     n_runs = 200  # Number of runs per difficulty level
-    difficulty_points = np.linspace(0, 1, 101)  # Test 31 points between 0 and 1
+    difficulty_points = np.linspace(0, 1, 31)  # Test 31 points between 0 and 1
 
     collision_proportions = []
     success_proportions = []
@@ -75,16 +75,17 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
                 e1_visibility.append(False)
                 e1_calculability.append(False)
                 continue
-            
-            robot.create_ring(ring=ring)
+
             setup_times.append(time.time() - start_time)
             
-            # Update collision manager with the new ring pose, keeping robot at home
+            # Robot is already at home and ring is positioned correctly by pose function
+            # But let's double-check the configuration as a safety net
             robot.go_home()
+
             collision_render_manager.update_poses(robot, ring)
             ring_projector.update()
 
-            # Check for collision and successful grip
+            # Check for collision and successful grip (should match pose function validation)
             is_collision = collision_render_manager.check_collision()
             is_success = robot.evaluate_grip(ring)
 
@@ -227,55 +228,11 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     
     plt.show()
 
-def set_random_e1_pose_circular(robot, difficulty=0.5):
-
-    # Cache limits and home position
-    rx_lim = robot.params.get('tilt_rx_limit_deg', 0.0)
-    rz_lim = robot.params.get('tilt_rz_limit_deg', 0.0)
-    x_home = robot.E1_home_x
-    y_home = robot.E1_home_y
-    
-    max_radius = 250
-
-
-    # Random difficulty for each parameter independently
-    d_radius = difficulty  # Deterministic radius difficulty
-    d_rx = np.random.rand() * difficulty  # Random tilt difficulty up to max
-    d_rz = np.random.rand() * difficulty  # Random tilt difficulty up to max
-
-    # Generate random position in circular pattern around home
-    if d_radius > 0:
-        # Random angle and radius within circular bounds
-        angle = np.random.uniform(0, 2 * np.pi)
-        radius = d_radius * max_radius
-        x = x_home + radius * np.cos(angle)
-        y = y_home + radius * np.sin(angle)
-    else:
-        # Stay at home position
-        x, y = x_home, y_home
-
-    # Generate random tilts with random signs
-    rx = np.random.choice([-1, 1]) * d_rx * rx_lim
-    rz = np.random.choice([-1, 1]) * d_rz * rz_lim
-
-    # Test pose validity
-    e1_position = np.array([x, y, 0], dtype=np.float32)
-    pose = {'x': x, 'y': y, 'rx': rx, 'rz': rz}
-    if robot.update_from_e1_pose(e1_position, rx, rz):
-        # Calculate actual difficulty of successful pose
-        actual_difficulty = _calculate_pose_difficulty_circular(robot, x, y, rx, rz, x_home, y_home, max_radius, rx_lim, rz_lim)
-        return True, pose, actual_difficulty
-    
-    else:
-        robot.go_home()
-        # Fallback to home pose
-        return False, pose, 0.0
     
 def set_random_e1_pose_circular_with_repeats(robot, ring, collision_render_manager, difficulty=0.5, max_attempts=20):
     """
     Tries to set a random, valid, and collision-free E1 pose by making repeated attempts.
-    A pose is considered valid if it's within the robot's kinematic limits and doesn't 
-    cause a collision at the start.
+    Validates robot can reach ring position, then checks collision from home position.
     """
     # Cache limits and home position from the robot's parameters
     rx_lim = robot.params.get('tilt_rx_limit_deg', 0.0)
@@ -308,17 +265,19 @@ def set_random_e1_pose_circular_with_repeats(robot, ring, collision_render_manag
         pose = {'x': x, 'y': y, 'rx': rx, 'rz': rz}
         
         if robot.update_from_e1_pose(e1_position, rx, rz):
-            # If the pose is valid, check for collisions
+            # If the pose is kinematically valid, create ring at this pose
             robot.create_ring(ring=ring)
+            
+            # Now return robot to home and check collision/calculability from home
+            robot.go_home()
             collision_render_manager.update_poses(robot, ring)
             
             if not collision_render_manager.check_collision():
-                # If no collision, calculate the actual difficulty and return success
+                # If no collision from home, return robot to ring position and return success
+                robot.update_from_e1_pose(e1_position, rx, rz)
                 actual_difficulty = _calculate_pose_difficulty_circular(robot, x, y, rx, rz, x_home, y_home, max_radius, rx_lim, rz_lim)
                 return True, pose, actual_difficulty
-            else:
-                # Collision detected - reset robot to home before next attempt
-                robot.go_home()
+            # If collision from home, continue to next attempt
         # If pose is invalid, robot state is unchanged, continue to next attempt
 
     # If all attempts fail, reset the robot to home and return failure
@@ -395,17 +354,19 @@ def set_random_e1_pose_circular_angle_limit(robot, ring, collision_render_manage
         pose = {'x': x, 'y': y, 'rx': rx, 'rz': rz}
         
         if robot.update_from_e1_pose(e1_position, rx, rz):
-            # If the pose is valid, check for collisions
+            # If the pose is kinematically valid, create ring at this pose
             robot.create_ring(ring=ring)
+            
+            # Now return robot to home and check collision/calculability from home
+            robot.go_home()
             collision_render_manager.update_poses(robot, ring)
             
             if not collision_render_manager.check_collision():
-                # If no collision, calculate the actual difficulty and return success
+                # If no collision from home, return robot to ring position and return success
+                robot.update_from_e1_pose(e1_position, rx, rz)
                 actual_difficulty = _calculate_pose_difficulty_circular(robot, x, y, rx, rz, x_home, y_home, max_radius, rx_lim, rz_lim)
                 return True, pose, actual_difficulty
-            else:
-                # Collision detected - reset robot to home before next attempt
-                robot.go_home()
+            # If collision from home, continue to next attempt
         # If pose is invalid, robot state is unchanged, continue to next attempt
 
     # If all attempts fail, reset the robot to home and return failure
@@ -550,19 +511,21 @@ def set_random_pose_box_constraint_fixed_rotation(robot, ring, collision_render_
         pose = {'x': x_current, 'y': y_current, 'rx': rx, 'rz': rz}
         
         if robot.update_from_e1_pose(e1_position, rx, rz):
-            # If the pose is valid, check for collisions
+            # If the pose is kinematically valid, create ring at this pose
             robot.create_ring(ring=ring)
+            
+            # Now return robot to home and check collision/calculability from home
+            robot.go_home()
             collision_render_manager.update_poses(robot, ring)
             
             if not collision_render_manager.check_collision():
-                # If no collision, calculate the actual difficulty and return success
+                # If no collision from home, return robot to ring position and return success
+                robot.update_from_e1_pose(e1_position, rx, rz)
                 actual_difficulty = _calculate_pose_difficulty_box_from_home(robot, x_current, y_current, rx, rz, x_home, y_home, 
                                                                            rx_home, rz_home, max_possible_dist, 
                                                                            rx_pos_range, rx_neg_range, rz_pos_range, rz_neg_range)
                 return True, pose, actual_difficulty
-            else:
-                # Collision detected - reset robot to home before next attempt
-                robot.go_home()
+            # If collision from home, continue to next attempt
         # If pose is kinematically invalid or collision occurred, continue with next attempt
     
     # If all attempts fail, reset the robot to home and return failure
@@ -648,18 +611,20 @@ def set_random_pose_box_constraint(robot, ring, collision_render_manager, diffic
         pose = {'x': x, 'y': y, 'rx': rx, 'rz': rz}
         
         if robot.update_from_e1_pose(e1_position, rx, rz):
-            # If the pose is valid, check for collisions
+            # If the pose is kinematically valid, create ring at this pose
             robot.create_ring(ring=ring)
+            
+            # Now return robot to home and check collision/calculability from home
+            robot.go_home()
             collision_render_manager.update_poses(robot, ring)
             
             if not collision_render_manager.check_collision():
-                # If no collision, calculate the actual difficulty and return success
+                # If no collision from home, return robot to ring position and return success
+                robot.update_from_e1_pose(e1_position, rx, rz)
                 actual_difficulty = _calculate_pose_difficulty_box(robot, x, y, rx, rz, x_home, y_home, 
                                                                  max_possible_dist, rx_lim, rz_lim)
                 return True, pose, actual_difficulty
-            else:
-                # Collision detected - reset robot to home before next attempt
-                robot.go_home()
+            # If collision from home, continue to next attempt
         # If pose is invalid, robot state is unchanged, continue to next attempt
     
     # If all attempts fail, reset the robot to home and return failure
@@ -754,18 +719,21 @@ def generate_pose_difficulty_from_box_angle_free(robot, ring, collision_render_m
         collision_detected = False
         
         if valid_kinematics:
+            # If kinematically valid, create ring at this pose
             robot.create_ring(ring=ring)
+            
+            # Now return robot to home and check collision/calculability from home
+            robot.go_home()
             collision_render_manager.update_poses(robot, ring)
             collision_detected = collision_render_manager.check_collision()
             
             if not collision_detected:
-                # Success! Calculate actual difficulty and return
+                # Success! Return robot to ring position, calculate actual difficulty and return
+                robot.update_from_e1_pose(e1_position, rx, rz)
                 actual_difficulty = _calculate_pose_difficulty_box(robot, x, y, rx, rz, x_home, y_home, 
                                                                  max_possible_dist, rx_lim, rz_lim)
                 return True, pose, actual_difficulty
-            else:
-                # Collision detected - reset robot to home before next attempt
-                robot.go_home()
+            # If collision from home, continue binary search
         
         # Failure (either invalid kinematics or collision) - adjust search ranges
         # Binary search strategy: narrow the range by eliminating the half that contains the failed point
@@ -854,6 +822,15 @@ if __name__ == '__main__':
     collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
     
     test_ring_placement(robot, ring, ring_projector, collision_render_manager, set_random_pose_box_constraint)
+
+    set_random_pose_box_constraint(robot, ring, collision_render_manager, difficulty=1)
+    visualize_system(robot, ring=ring)
+    set_random_pose_box_constraint(robot, ring, collision_render_manager, difficulty=1)
+    visualize_system(robot, ring=ring)
+
+
+
+    
 
 
 
