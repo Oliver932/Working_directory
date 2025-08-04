@@ -87,41 +87,6 @@ class VideoRecorderCallback(BaseCallback):
             os.unlink(robot_vid_path)
         return True
 
-    def record_performance(self, model, n_episodes=5, prefix="final"):
-        """A standalone method to record the performance of a trained model."""
-        # Sync difficulty from training to evaluation environment
-        self._sync_difficulty()
-        
-        overview_frames, robot_perspective_frames = [], []
-        for _ in range(n_episodes):
-            obs = self.eval_env.reset()
-            done = [False]
-            while not done[0]:
-                overview_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='scene_overview'))
-                robot_perspective_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
-                action, _ = model.predict(obs, deterministic=True)
-                obs, _, done, _ = self.eval_env.step(action)
-            
-        # Use temporary files
-        temp_dir = "C:/temp/artifacts"
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        overview_vid_path = os.path.join(temp_dir, f"{prefix}_replay_overview.mp4")
-        robot_vid_path = os.path.join(temp_dir, f"{prefix}_replay_robot.mp4")
-        
-        print(f"--- Saving overview video to {overview_vid_path} ---")
-        imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
-        print(f"--- Saving robot perspective video to {robot_vid_path} ---")
-        imageio.mimwrite(robot_vid_path, [np.array(frame) for frame in robot_perspective_frames], fps=30, format='FFMPEG')
-
-        # MLFLOW: Log the final videos as artifacts
-        mlflow.log_artifact(overview_vid_path, artifact_path="replays")
-        mlflow.log_artifact(robot_vid_path, artifact_path="replays")
-        
-        # Clean up temporary files
-        os.unlink(overview_vid_path)
-        os.unlink(robot_vid_path)
-
 # ==================================================================================
 # == Custom Metrics Callback                                                      ==
 # ==================================================================================
@@ -630,8 +595,6 @@ if __name__ == '__main__':
     print("--- Runtime Configuration ---")
     run_name_input = input("Enter a name for this training run (or press Enter for default): ")
     record_while_training = input("Record performance videos during training? (y/n): ").lower() == 'y'
-    render_final_video = input("Render a final performance video after training? (y/n): ").lower() == 'y'
-    save_stats = input("Save VecNormalize normalisation stats plots to MLflow? (y/n): ").lower() == 'y'
     print("-----------------------------")
 
     # --- Generate Run Name ---
@@ -682,7 +645,7 @@ if __name__ == '__main__':
         train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., norm_obs_keys=norm_obs_keys)
 
         eval_env = None
-        needs_eval_env = record_while_training or render_final_video
+        needs_eval_env = record_while_training
         if needs_eval_env:
             def make_eval_env():
                 env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
@@ -769,14 +732,13 @@ if __name__ == '__main__':
             mlflow.log_artifacts(tensorboard_log_dir, artifact_path="tensorboard")
             import_tensorboard_to_mlflow(tensorboard_log_dir)
         
-        if render_final_video:
-            print("--- Recording final performance of the trained agent ---")
-            # The record_performance method now automatically logs to MLflow
-            video_callback.record_performance(
-                model, 
-                n_episodes=CONFIG["evaluation"]["n_video_episodes"], 
-                prefix="final"
-            )
+        # Store the run ID for potential evaluation later
+        current_run_id = mlflow.active_run().info.run_id
+        
+        # Save run ID to a file for easy access
+        run_id_file = os.path.join(temp_dir, f"run_id_{run_name}.txt")
+        with open(run_id_file, 'w') as f:
+            f.write(current_run_id)
         
         # Clean up model from memory
         del model
@@ -785,81 +747,8 @@ if __name__ == '__main__':
         if eval_env:
             eval_env.close()
         
-        # Save VecNormalize stats plots if user requested
-        if save_stats:
-
-            def plot_and_save_stats(vecnorm, name_prefix):
-                import numpy as np
-                import pandas as pd
-                obs_rms = vecnorm.obs_rms
-                summary_rows = []
-                # For Dict obs space with norm_obs_keys, obs_rms is a dict of RunningMeanStd objects
-                if isinstance(obs_rms, dict):
-                    keys = [k for k in obs_rms.keys() if k in norm_obs_keys]
-                    if not keys:
-                        print(f"Warning: No normalized observation keys found in obs_rms for {name_prefix}. Skipping summary table.")
-                        return
-                    for key in keys:
-                        rms = obs_rms[key]
-                        mean_vals = getattr(rms, 'mean', None)
-                        var_vals = getattr(rms, 'var', None)
-                        if mean_vals is None or var_vals is None:
-                            print(f"Warning: Missing mean/var for key '{key}' in obs_rms. Skipping.")
-                            continue
-                        std_vals = np.sqrt(var_vals)
-                        for idx in range(len(mean_vals)):
-                            summary_rows.append({
-                                'obs_key': key,
-                                'dim': idx,
-                                'mean': mean_vals[idx],
-                                'std': std_vals[idx],
-                                'min': mean_vals[idx] - std_vals[idx],
-                                'max': mean_vals[idx] + std_vals[idx]
-                            })
-                else:
-                    # Fallback: single array obs space
-                    mean_vals = getattr(obs_rms, 'mean', None)
-                    var_vals = getattr(obs_rms, 'var', None)
-                    if mean_vals is None or var_vals is None:
-                        print(f"Warning: obs_rms missing mean/var for {name_prefix}. Skipping summary table.")
-                        return
-                    std_vals = np.sqrt(var_vals)
-                    for idx in range(len(mean_vals)):
-                        summary_rows.append({
-                            'obs_key': 'obs',
-                            'dim': idx,
-                            'mean': mean_vals[idx],
-                            'std': std_vals[idx],
-                            'min': mean_vals[idx] - std_vals[idx],
-                            'max': mean_vals[idx] + std_vals[idx]
-                        })
-
-                # Reward stats
-                ret_mean = getattr(vecnorm.ret_rms, 'mean', None)
-                ret_var = getattr(vecnorm.ret_rms, 'var', None)
-                if ret_mean is not None and ret_var is not None:
-                    ret_std = np.sqrt(ret_var)
-                    summary_rows.append({
-                        'obs_key': 'reward',
-                        'dim': 0,
-                        'mean': ret_mean,
-                        'std': ret_std,
-                        'min': ret_mean - ret_std,
-                        'max': ret_mean + ret_std
-                    })
-                else:
-                    print(f"Warning: ret_rms missing mean/var for {name_prefix}. Skipping reward stats in summary table.")
-
-                if summary_rows:
-                    df = pd.DataFrame(summary_rows)
-                    summary_path = os.path.join(temp_dir, f"{name_prefix}_vecnormalize_summary.csv")
-                    df.to_csv(summary_path, index=False)
-                    mlflow.log_artifact(summary_path, artifact_path="vecnormalize_stats")
-                    os.unlink(summary_path)
-
-            plot_and_save_stats(train_env, "train_env")
-            if needs_eval_env:
-                plot_and_save_stats(eval_env, "eval_env")
-
         print(f"--- MLflow Run Finished ---")
+        print(f"Run ID: {current_run_id}")
+        print(f"Run ID saved to: {run_id_file}")
         print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
+        

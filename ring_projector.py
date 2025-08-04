@@ -244,6 +244,14 @@ class RingProjector:
 
         in_front_mask = dist_forward > 0
         if np.count_nonzero(in_front_mask) < 5:
+            # RL-friendly: return last valid observation with zero deltas if available
+            last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
+            if last_obs:
+                last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
+                last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
+                last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
+                return last_obs
+            # Fallback to zeros if no valid observation yet
             return {
                 "visible": False,
                 "calculable": False,
@@ -346,6 +354,14 @@ class RingProjector:
         points_to_fit = np.argwhere(image_gray > 10) # Get (row, col) of all white pixels
         
         if len(points_to_fit) < 5:
+            # RL-friendly: return last valid observation with zero deltas if available
+            last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
+            if last_obs:
+                last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
+                last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
+                last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
+                return last_obs
+            # Fallback to zeros if no valid observation yet
             return {
                 "visible": False,
                 "calculable": False,
