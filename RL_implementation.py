@@ -619,6 +619,7 @@ if __name__ == '__main__':
     run_name_input = input("Enter a name for this training run (or press Enter for default): ")
     record_while_training = input("Record performance videos during training? (y/n): ").lower() == 'y'
     render_final_video = input("Render a final performance video after training? (y/n): ").lower() == 'y'
+    save_stats = input("Save VecNormalize normalisation stats plots to MLflow? (y/n): ").lower() == 'y'
     print("-----------------------------")
 
     # --- Generate Run Name ---
@@ -771,39 +772,71 @@ if __name__ == '__main__':
         if eval_env:
             eval_env.close()
         
-        # Ask user if they want to save VecNormalize stats plots
-        save_stats = input("Save VecNormalize normalisation stats plots to MLflow? (y/n): ").lower() == 'y'
+        # Save VecNormalize stats plots if user requested
         if save_stats:
             def plot_and_save_stats(vecnorm, name_prefix):
                 import numpy as np
-                # Observation stats
-                obs_mean = vecnorm.obs_rms.mean
-                obs_std = np.sqrt(vecnorm.obs_rms.var)
-                plt.figure(figsize=(10,4))
-                plt.subplot(1,2,1)
-                plt.title(f"{name_prefix} Obs Mean")
-                plt.bar(np.arange(len(obs_mean)), obs_mean)
-                plt.subplot(1,2,2)
-                plt.title(f"{name_prefix} Obs Std")
-                plt.bar(np.arange(len(obs_std)), obs_std)
-                plt.tight_layout()
-                obs_plot_path = os.path.join(temp_dir, f"{name_prefix}_obs_stats.png")
-                plt.savefig(obs_plot_path)
-                plt.close()
-                mlflow.log_artifact(obs_plot_path, artifact_path="vecnormalize_stats")
-                os.unlink(obs_plot_path)
+                # For Dict observation spaces, obs_rms.mean and obs_rms.var are dictionaries
+                obs_means = vecnorm.obs_rms.mean
+                obs_vars = vecnorm.obs_rms.var
+                
+                if isinstance(obs_means, dict):
+                    # Handle Dict observation space
+                    fig, axes = plt.subplots(2, len(obs_means), figsize=(4*len(obs_means), 8))
+                    if len(obs_means) == 1:
+                        axes = axes.reshape(-1, 1)
+                    
+                    for i, (key, mean_vals) in enumerate(obs_means.items()):
+                        if key in norm_obs_keys:  # Only plot normalized keys
+                            var_vals = obs_vars[key]
+                            std_vals = np.sqrt(var_vals)
+                            
+                            # Plot means
+                            axes[0, i].bar(range(len(mean_vals)), mean_vals)
+                            axes[0, i].set_title(f"{key} - Mean")
+                            axes[0, i].tick_params(axis='x', rotation=45)
+                            
+                            # Plot standard deviations
+                            axes[1, i].bar(range(len(std_vals)), std_vals)
+                            axes[1, i].set_title(f"{key} - Std")
+                            axes[1, i].tick_params(axis='x', rotation=45)
+                    
+                    plt.tight_layout()
+                    obs_plot_path = os.path.join(temp_dir, f"{name_prefix}_obs_stats.png")
+                    plt.savefig(obs_plot_path, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    mlflow.log_artifact(obs_plot_path, artifact_path="vecnormalize_stats")
+                    os.unlink(obs_plot_path)
+                else:
+                    # Handle single array observation space (fallback)
+                    obs_std = np.sqrt(obs_vars)
+                    plt.figure(figsize=(10,4))
+                    plt.subplot(1,2,1)
+                    plt.title(f"{name_prefix} Obs Mean")
+                    plt.bar(np.arange(len(obs_means)), obs_means)
+                    plt.subplot(1,2,2)
+                    plt.title(f"{name_prefix} Obs Std")
+                    plt.bar(np.arange(len(obs_std)), obs_std)
+                    plt.tight_layout()
+                    obs_plot_path = os.path.join(temp_dir, f"{name_prefix}_obs_stats.png")
+                    plt.savefig(obs_plot_path)
+                    plt.close()
+                    mlflow.log_artifact(obs_plot_path, artifact_path="vecnormalize_stats")
+                    os.unlink(obs_plot_path)
+                
                 # Reward stats
                 ret_mean = vecnorm.ret_rms.mean
                 ret_std = np.sqrt(vecnorm.ret_rms.var)
-                plt.figure()
+                plt.figure(figsize=(6,4))
                 plt.title(f"{name_prefix} Reward Mean/Std")
-                plt.bar(["mean"], [ret_mean])
-                plt.bar(["std"], [ret_std])
+                plt.bar(["mean", "std"], [ret_mean, ret_std])
+                plt.ylabel("Value")
                 ret_plot_path = os.path.join(temp_dir, f"{name_prefix}_reward_stats.png")
                 plt.savefig(ret_plot_path)
                 plt.close()
                 mlflow.log_artifact(ret_plot_path, artifact_path="vecnormalize_stats")
                 os.unlink(ret_plot_path)
+                
             plot_and_save_stats(train_env, "train_env")
             if needs_eval_env:
                 plot_and_save_stats(eval_env, "eval_env")
