@@ -6,6 +6,7 @@ import imageio
 import glob
 from collections import deque
 import json
+import matplotlib.pyplot as plt
 
 # MLFLOW: Import the mlflow library
 import mlflow
@@ -25,6 +26,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # ==================================================================================
 # == Video Recording Callback                                                     ==
@@ -398,7 +400,7 @@ class CustomRobotEnv(gym.Env):
 
             "actuator_extensions": self.robot.extensions,
             "delta_extensions": self.robot.delta_extensions,
-            "E1_position": self.robot.E1 / (self.E1_normalization_factor or 400.0), # Normalize the position
+            "E1_position": self.robot.E1,
             "delta_E1": self.robot.delta_E1,
             "E1_quaternion": self.robot.E1_quaternion,
             "delta_E1_quaternion": self.robot.delta_E1_quaternion,
@@ -650,18 +652,24 @@ if __name__ == '__main__':
         # Pass curriculum config to environment for initial difficulty setting
         env_config["curriculum"] = CONFIG["callbacks"]["curriculum_trainer"]
 
-        train_env = CustomRobotEnv(render_mode=None, config=env_config)
-        train_env = Monitor(train_env, info_keywords=MONITOR_KEYWORDS)
-        
-        print("--- Checking the custom environment ---")
-        check_env(train_env)
-        print("--- Environment check passed! ---")
+        def make_env():
+            env = CustomRobotEnv(render_mode=None, config=env_config)
+            env = Monitor(env, info_keywords=MONITOR_KEYWORDS)
+            return env
+        train_env = DummyVecEnv([make_env])
+        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10.)
 
         eval_env = None
         needs_eval_env = record_while_training or render_final_video
         if needs_eval_env:
-            eval_env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
-            eval_env = Monitor(eval_env)
+            def make_eval_env():
+                env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
+                env = Monitor(env)
+                return env
+            eval_env = DummyVecEnv([make_eval_env])
+            eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.)
+            # Synchronize statistics
+            eval_env.obs_rms = train_env.obs_rms
 
         # --- Callback Setup ---
         custom_metrics_callback = CustomMetricsCallback(
@@ -711,17 +719,19 @@ if __name__ == '__main__':
         temp_dir = "C:/temp/artifacts"
         os.makedirs(temp_dir, exist_ok=True)
         model_save_path = os.path.join(temp_dir, f"ppo_model_{run_name}.zip")
-        
         print(f"--- Saving the model to {model_save_path} ---")
         model.save(model_save_path)
-        
+        # Save VecNormalize statistics
+        vecnorm_save_path = os.path.join(temp_dir, f"vecnormalize_{run_name}.pkl")
+        train_env.save(vecnorm_save_path)
         # MLFLOW: Log the final model and the TensorBoard logs as artifacts
         print("--- Logging final artifacts to MLflow ---")
         mlflow.log_artifact(model_save_path, artifact_path="model")
-        
-        # Clean up temporary model file
+        mlflow.log_artifact(vecnorm_save_path, artifact_path="model")
+        # Clean up temporary model files
         os.unlink(model_save_path)
-        
+        os.unlink(vecnorm_save_path)
+
         # Log TensorBoard artifacts and import metrics to MLflow
         tensorboard_log_dir = None
         if os.path.exists(tensorboard_temp_path):
@@ -752,5 +762,42 @@ if __name__ == '__main__':
         if eval_env:
             eval_env.close()
         
+        # Ask user if they want to save VecNormalize stats plots
+        save_stats = input("Save VecNormalize normalisation stats plots to MLflow? (y/n): ").lower() == 'y'
+        if save_stats:
+            def plot_and_save_stats(vecnorm, name_prefix):
+                import numpy as np
+                # Observation stats
+                obs_mean = vecnorm.obs_rms.mean
+                obs_std = np.sqrt(vecnorm.obs_rms.var)
+                plt.figure(figsize=(10,4))
+                plt.subplot(1,2,1)
+                plt.title(f"{name_prefix} Obs Mean")
+                plt.bar(np.arange(len(obs_mean)), obs_mean)
+                plt.subplot(1,2,2)
+                plt.title(f"{name_prefix} Obs Std")
+                plt.bar(np.arange(len(obs_std)), obs_std)
+                plt.tight_layout()
+                obs_plot_path = os.path.join(temp_dir, f"{name_prefix}_obs_stats.png")
+                plt.savefig(obs_plot_path)
+                plt.close()
+                mlflow.log_artifact(obs_plot_path, artifact_path="vecnormalize_stats")
+                os.unlink(obs_plot_path)
+                # Reward stats
+                ret_mean = vecnorm.ret_rms.mean
+                ret_std = np.sqrt(vecnorm.ret_rms.var)
+                plt.figure()
+                plt.title(f"{name_prefix} Reward Mean/Std")
+                plt.bar(["mean"], [ret_mean])
+                plt.bar(["std"], [ret_std])
+                ret_plot_path = os.path.join(temp_dir, f"{name_prefix}_reward_stats.png")
+                plt.savefig(ret_plot_path)
+                plt.close()
+                mlflow.log_artifact(ret_plot_path, artifact_path="vecnormalize_stats")
+                os.unlink(ret_plot_path)
+            plot_and_save_stats(train_env, "train_env")
+            if needs_eval_env:
+                plot_and_save_stats(eval_env, "eval_env")
+
         print(f"--- MLflow Run Finished ---")
         print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")

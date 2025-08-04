@@ -57,7 +57,7 @@
             "check_freq": 10000,
             "increase_threshold": 0.90,
             "decrease_threshold": 0.75,
-            "difficulty_step": 0.04,
+            "difficulty_step": 0.01,
             "min_difficulty": 0.15,
             "max_difficulty": 1.0
 
