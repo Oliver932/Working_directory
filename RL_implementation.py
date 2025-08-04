@@ -44,15 +44,14 @@ class VideoRecorderCallback(BaseCallback):
             overview_frames, robot_perspective_frames = [], []
             print(f"--- Recording performance at step {self.n_calls} ---")
             for _ in range(self.n_eval_episodes):
-                obs, _ = self.eval_env.reset()
-                done = False
-                while not done:
-                    # Since the env is wrapped in a Monitor, we need to access the underlying env for render
-                    overview_frames.append(self.eval_env.env.render(camera_name='scene_overview'))
-                    robot_perspective_frames.append(self.eval_env.env.render(camera_name='robot_perspective'))
+                obs = self.eval_env.reset()
+                done = [False]
+                while not done[0]:
+                    # Since the env is wrapped in a Monitor and DummyVecEnv, access the underlying env for render
+                    overview_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='scene_overview'))
+                    robot_perspective_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
                     action, _ = self.model.predict(obs, deterministic=True)
-                    obs, _, terminated, truncated, _ = self.eval_env.step(action)
-                    done = terminated or truncated
+                    obs, _, done, _ = self.eval_env.step(action)
             
             # Use temporary files that get deleted after MLflow logging
             temp_dir = "C:/temp/artifacts"
@@ -78,16 +77,15 @@ class VideoRecorderCallback(BaseCallback):
     def record_performance(self, model, n_episodes=5, prefix="final"):
         """A standalone method to record the performance of a trained model."""
         overview_frames, robot_perspective_frames = [], []
-        obs, _ = self.eval_env.reset()
+        obs = self.eval_env.reset()
         for _ in range(n_episodes):
-            done = False
-            while not done:
-                overview_frames.append(self.eval_env.env.render(camera_name='scene_overview'))
-                robot_perspective_frames.append(self.eval_env.env.render(camera_name='robot_perspective'))
+            done = [False]
+            while not done[0]:
+                overview_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='scene_overview'))
+                robot_perspective_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
                 action, _ = model.predict(obs, deterministic=True)
-                obs, _, terminated, truncated, _ = self.eval_env.step(action)
-                done = terminated or truncated
-            obs, _ = self.eval_env.reset()
+                obs, _, done, _ = self.eval_env.step(action)
+            obs = self.eval_env.reset()
             
         # Use temporary files
         temp_dir = "C:/temp/artifacts"
@@ -774,69 +772,76 @@ if __name__ == '__main__':
         
         # Save VecNormalize stats plots if user requested
         if save_stats:
+
             def plot_and_save_stats(vecnorm, name_prefix):
                 import numpy as np
-                # For Dict observation spaces, obs_rms.mean and obs_rms.var are dictionaries
-                obs_means = vecnorm.obs_rms.mean
-                obs_vars = vecnorm.obs_rms.var
-                
-                if isinstance(obs_means, dict):
-                    # Handle Dict observation space
-                    fig, axes = plt.subplots(2, len(obs_means), figsize=(4*len(obs_means), 8))
-                    if len(obs_means) == 1:
-                        axes = axes.reshape(-1, 1)
-                    
-                    for i, (key, mean_vals) in enumerate(obs_means.items()):
-                        if key in norm_obs_keys:  # Only plot normalized keys
-                            var_vals = obs_vars[key]
-                            std_vals = np.sqrt(var_vals)
-                            
-                            # Plot means
-                            axes[0, i].bar(range(len(mean_vals)), mean_vals)
-                            axes[0, i].set_title(f"{key} - Mean")
-                            axes[0, i].tick_params(axis='x', rotation=45)
-                            
-                            # Plot standard deviations
-                            axes[1, i].bar(range(len(std_vals)), std_vals)
-                            axes[1, i].set_title(f"{key} - Std")
-                            axes[1, i].tick_params(axis='x', rotation=45)
-                    
-                    plt.tight_layout()
-                    obs_plot_path = os.path.join(temp_dir, f"{name_prefix}_obs_stats.png")
-                    plt.savefig(obs_plot_path, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    mlflow.log_artifact(obs_plot_path, artifact_path="vecnormalize_stats")
-                    os.unlink(obs_plot_path)
+                import pandas as pd
+                obs_rms = vecnorm.obs_rms
+                summary_rows = []
+                # For Dict obs space with norm_obs_keys, obs_rms is a dict of RunningMeanStd objects
+                if isinstance(obs_rms, dict):
+                    keys = [k for k in obs_rms.keys() if k in norm_obs_keys]
+                    if not keys:
+                        print(f"Warning: No normalized observation keys found in obs_rms for {name_prefix}. Skipping summary table.")
+                        return
+                    for key in keys:
+                        rms = obs_rms[key]
+                        mean_vals = getattr(rms, 'mean', None)
+                        var_vals = getattr(rms, 'var', None)
+                        if mean_vals is None or var_vals is None:
+                            print(f"Warning: Missing mean/var for key '{key}' in obs_rms. Skipping.")
+                            continue
+                        std_vals = np.sqrt(var_vals)
+                        for idx in range(len(mean_vals)):
+                            summary_rows.append({
+                                'obs_key': key,
+                                'dim': idx,
+                                'mean': mean_vals[idx],
+                                'std': std_vals[idx],
+                                'min': mean_vals[idx] - std_vals[idx],
+                                'max': mean_vals[idx] + std_vals[idx]
+                            })
                 else:
-                    # Handle single array observation space (fallback)
-                    obs_std = np.sqrt(obs_vars)
-                    plt.figure(figsize=(10,4))
-                    plt.subplot(1,2,1)
-                    plt.title(f"{name_prefix} Obs Mean")
-                    plt.bar(np.arange(len(obs_means)), obs_means)
-                    plt.subplot(1,2,2)
-                    plt.title(f"{name_prefix} Obs Std")
-                    plt.bar(np.arange(len(obs_std)), obs_std)
-                    plt.tight_layout()
-                    obs_plot_path = os.path.join(temp_dir, f"{name_prefix}_obs_stats.png")
-                    plt.savefig(obs_plot_path)
-                    plt.close()
-                    mlflow.log_artifact(obs_plot_path, artifact_path="vecnormalize_stats")
-                    os.unlink(obs_plot_path)
-                
+                    # Fallback: single array obs space
+                    mean_vals = getattr(obs_rms, 'mean', None)
+                    var_vals = getattr(obs_rms, 'var', None)
+                    if mean_vals is None or var_vals is None:
+                        print(f"Warning: obs_rms missing mean/var for {name_prefix}. Skipping summary table.")
+                        return
+                    std_vals = np.sqrt(var_vals)
+                    for idx in range(len(mean_vals)):
+                        summary_rows.append({
+                            'obs_key': 'obs',
+                            'dim': idx,
+                            'mean': mean_vals[idx],
+                            'std': std_vals[idx],
+                            'min': mean_vals[idx] - std_vals[idx],
+                            'max': mean_vals[idx] + std_vals[idx]
+                        })
+
                 # Reward stats
-                ret_mean = vecnorm.ret_rms.mean
-                ret_std = np.sqrt(vecnorm.ret_rms.var)
-                plt.figure(figsize=(6,4))
-                plt.title(f"{name_prefix} Reward Mean/Std")
-                plt.bar(["mean", "std"], [ret_mean, ret_std])
-                plt.ylabel("Value")
-                ret_plot_path = os.path.join(temp_dir, f"{name_prefix}_reward_stats.png")
-                plt.savefig(ret_plot_path)
-                plt.close()
-                mlflow.log_artifact(ret_plot_path, artifact_path="vecnormalize_stats")
-                os.unlink(ret_plot_path)
-                
+                ret_mean = getattr(vecnorm.ret_rms, 'mean', None)
+                ret_var = getattr(vecnorm.ret_rms, 'var', None)
+                if ret_mean is not None and ret_var is not None:
+                    ret_std = np.sqrt(ret_var)
+                    summary_rows.append({
+                        'obs_key': 'reward',
+                        'dim': 0,
+                        'mean': ret_mean,
+                        'std': ret_std,
+                        'min': ret_mean - ret_std,
+                        'max': ret_mean + ret_std
+                    })
+                else:
+                    print(f"Warning: ret_rms missing mean/var for {name_prefix}. Skipping reward stats in summary table.")
+
+                if summary_rows:
+                    df = pd.DataFrame(summary_rows)
+                    summary_path = os.path.join(temp_dir, f"{name_prefix}_vecnormalize_summary.csv")
+                    df.to_csv(summary_path, index=False)
+                    mlflow.log_artifact(summary_path, artifact_path="vecnormalize_stats")
+                    os.unlink(summary_path)
+
             plot_and_save_stats(train_env, "train_env")
             if needs_eval_env:
                 plot_and_save_stats(eval_env, "eval_env")
