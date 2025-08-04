@@ -1,3 +1,126 @@
+import shap
+def evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id, n_background=100, n_eval=200):
+    """Evaluate the model using SHAP and log beeswarm plots for each output dimension to MLflow. Logs to the provided MLflow run_id."""
+
+    # Use all keys from the observation space, in order
+    obs_keys = list(eval_env.observation_space.spaces.keys())
+
+    # 1. Collect background dataset (observations from random rollouts)
+    obs_list = []
+    for _ in range(n_background):
+        obs = eval_env.reset()
+        done = [False]
+        while not done[0]:
+            # Flatten dict obs if needed
+            if isinstance(obs, dict):
+                flat_obs = np.concatenate([obs[k].flatten() for k in obs_keys if k in obs])
+            else:
+                flat_obs = obs.flatten()
+            obs_list.append(flat_obs)
+            action, _ = model.predict(obs, deterministic=True)
+            obs, _, done, _ = eval_env.step(action)
+            if len(obs_list) >= n_background:
+                break
+        if len(obs_list) >= n_background:
+            break
+    background = np.stack(obs_list[:n_background])
+
+    # 2. Collect evaluation dataset (for SHAP explanation)
+    eval_obs_list = []
+    for _ in range(n_eval):
+        obs = eval_env.reset()
+        done = [False]
+        while not done[0]:
+            if isinstance(obs, dict):
+                flat_obs = np.concatenate([obs[k].flatten() for k in obs_keys if k in obs])
+            else:
+                flat_obs = obs.flatten()
+            eval_obs_list.append(flat_obs)
+            action, _ = model.predict(obs, deterministic=True)
+            obs, _, done, _ = eval_env.step(action)
+            if len(eval_obs_list) >= n_eval:
+                break
+        if len(eval_obs_list) >= n_eval:
+            break
+    eval_data = np.stack(eval_obs_list[:n_eval])
+
+    # 3. Define model prediction function for SHAP
+    def model_predict(X):
+        # X shape: (n_samples, n_features)
+        # Reconstruct obs dict with batched arrays for Dict obs space
+        if hasattr(eval_env.observation_space, 'spaces'):
+            obs_dict = {}
+            idx = 0
+            for k in obs_keys:
+                space = eval_env.observation_space.spaces[k]
+                size = np.prod(space.shape)
+                obs_dict[k] = X[:, idx:idx+size].reshape((X.shape[0],) + space.shape)
+                idx += size
+            obs_batch = obs_dict
+        else:
+            obs_batch = X
+        actions, _ = model.predict(obs_batch, deterministic=True)
+        return actions
+
+    # 4. Run SHAP KernelExplainer
+    explainer = shap.KernelExplainer(model_predict, background)
+    shap_values = explainer.shap_values(eval_data)
+
+    # 5. Plot beeswarm for each output dimension
+    output_dim = model.action_space.shape[0] if hasattr(model, 'action_space') else shap_values.shape[1]
+    temp_dir = "C:/temp/artifacts"
+    os.makedirs(temp_dir, exist_ok=True)
+    plot_paths = []
+
+    # Prepare feature names
+    feature_names = []
+    for k in obs_keys:
+        space = eval_env.observation_space.spaces[k]
+        if np.prod(space.shape) == 1:
+            feature_names.append(k)
+        else:
+            for j in range(np.prod(space.shape)):
+                feature_names.append(f"{k}[{j}]")
+
+    # Compute mean absolute SHAP values for each feature and output
+    # shap_values: (n_samples, n_features, n_outputs)
+    if isinstance(shap_values, list):
+        # If shap_values is a list (one per output), stack to (n_outputs, n_samples, n_features)
+        shap_arr = np.stack(shap_values, axis=-1)  # (n_samples, n_features, n_outputs)
+    else:
+        shap_arr = shap_values  # already (n_samples, n_features, n_outputs)
+    mean_abs_shap = np.mean(np.abs(shap_arr), axis=0)  # (n_features, n_outputs)
+
+    # Plot grouped bar chart and log to the provided MLflow run
+    import matplotlib.pyplot as plt
+    n_features = mean_abs_shap.shape[0]
+    n_outputs = mean_abs_shap.shape[1]
+    x = np.arange(n_features)
+    bar_width = 0.8 / n_outputs
+
+    plt.figure(figsize=(max(12, n_features // 2), 6))
+    for i in range(n_outputs):
+        plt.bar(x + i * bar_width, mean_abs_shap[:, i], width=bar_width, label=f'Output {i}')
+
+    plt.xticks(x + bar_width * (n_outputs - 1) / 2, feature_names, rotation=90)
+    plt.ylabel("Mean |SHAP value|")
+    plt.title("Feature Importance per Output Dimension")
+    plt.legend()
+    plt.tight_layout()
+
+    shap_grouped_bar_path = os.path.join(temp_dir, "shap_grouped_bar.png")
+    plt.savefig(shap_grouped_bar_path)
+    # Ensure we log to the correct MLflow run
+    import mlflow
+    active_run = mlflow.active_run()
+    if active_run is None or active_run.info.run_id != run_id:
+        with mlflow.start_run(run_id=run_id):
+            mlflow.log_artifact(shap_grouped_bar_path, artifact_path="shap")
+    else:
+        mlflow.log_artifact(shap_grouped_bar_path, artifact_path="shap")
+    plt.close()
+    os.unlink(shap_grouped_bar_path)
+    print("--- Grouped SHAP bar plot (per output) saved and logged to MLflow ---")
 import os
 import json
 import numpy as np
@@ -38,7 +161,7 @@ def record_final_performance(model, eval_env, train_env, config, n_episodes=5, p
     
     overview_frames, robot_perspective_frames = [], []
     print(f"--- Recording {prefix} performance with {n_episodes} episodes ---")
-    
+
     for _ in range(n_episodes):
         obs = eval_env.reset()
         done = [False]
@@ -47,14 +170,14 @@ def record_final_performance(model, eval_env, train_env, config, n_episodes=5, p
             robot_perspective_frames.append(eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
             action, _ = model.predict(obs, deterministic=True)
             obs, _, done, _ = eval_env.step(action)
-        
+
     # Use temporary files
     temp_dir = "C:/temp/artifacts"
     os.makedirs(temp_dir, exist_ok=True)
-    
+
     overview_vid_path = os.path.join(temp_dir, f"{prefix}_replay_overview.mp4")
     robot_vid_path = os.path.join(temp_dir, f"{prefix}_replay_robot.mp4")
-    
+
     print(f"--- Saving overview video to {overview_vid_path} ---")
     imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
     print(f"--- Saving robot perspective video to {robot_vid_path} ---")
@@ -63,11 +186,11 @@ def record_final_performance(model, eval_env, train_env, config, n_episodes=5, p
     # Log the final videos as artifacts to the active MLflow run
     mlflow.log_artifact(overview_vid_path, artifact_path="replays")
     mlflow.log_artifact(robot_vid_path, artifact_path="replays")
-    
+
     # Clean up temporary files
     os.unlink(overview_vid_path)
     os.unlink(robot_vid_path)
-    
+
     print(f"--- {prefix} performance videos logged to MLflow ---")
 
 def plot_and_save_stats(vecnorm, name_prefix, norm_obs_keys):
@@ -179,21 +302,15 @@ def load_trained_model_and_envs(run_id, run_name, config):
     # Create environments
     MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps", "calculable_steps")
     
-    def make_train_env():
-        env_config = config["environment"].copy()
-        env_config["curriculum"] = config["callbacks"]["curriculum_trainer"]
-        env = CustomRobotEnv(render_mode=None, config=env_config)
-        env = Monitor(env, info_keywords=MONITOR_KEYWORDS)
-        return env
-    
+
+    # Create a single full-featured evaluation environment (with mesh loading, rendering, etc.)
     def make_eval_env():
         env = CustomRobotEnv(render_mode='rgb_array', config=config["environment"])
         env = Monitor(env)
         return env
-    
-    train_env = DummyVecEnv([make_train_env])
+
     eval_env = DummyVecEnv([make_eval_env])
-    
+
     # Specify which observation keys to normalize (only Box spaces, not MultiBinary)
     norm_obs_keys = [
         "ellipse_position", "delta_ellipse_position",
@@ -202,22 +319,29 @@ def load_trained_model_and_envs(run_id, run_name, config):
         "actuator_extensions", "delta_extensions",
         "E1_position", "delta_E1", "E1_quaternion", "delta_E1_quaternion"
     ]
-    
-    # Load VecNormalize
-    train_env = VecNormalize.load(vecnorm_file, train_env)
-    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10., norm_obs_keys=norm_obs_keys)
-    # Synchronize statistics
-    eval_env.obs_rms = train_env.obs_rms
-    
+
+    # Load VecNormalize wrapper directly on the full env
+    eval_env = VecNormalize.load(vecnorm_file, eval_env)
+
     # Load model
     model = PPO.load(model_file)
-    
+
     # Clean up downloaded files
     os.unlink(model_file)
     os.unlink(vecnorm_file)
     os.rmdir(model_path)
-    
-    return model, train_env, eval_env, norm_obs_keys
+
+    return model, eval_env, norm_obs_keys
+
+    # Load model
+    model = PPO.load(model_file)
+
+    # Clean up downloaded files
+    os.unlink(model_file)
+    os.unlink(vecnorm_file)
+    os.rmdir(model_path)
+
+    return model, eval_env, norm_obs_keys
 
 def run_evaluation(run_id, render_final_video=True, save_stats=True):
     """Run evaluation for a trained model using its MLflow run ID."""
@@ -239,30 +363,28 @@ def run_evaluation(run_id, render_final_video=True, save_stats=True):
         print(f"--- Resuming MLflow Run (Run ID: {run_id}) ---")
         
         # Load model and environments
-        model, train_env, eval_env, norm_obs_keys = load_trained_model_and_envs(run_id, run_name, config)
-        
+        model, eval_env, norm_obs_keys = load_trained_model_and_envs(run_id, run_name, config)
+
         if render_final_video:
             print("--- Recording final performance of the trained agent ---")
             record_final_performance(
-                model, 
+                model,
                 eval_env,
-                train_env,
+                None,  # No train_env
                 config,
-                n_episodes=config["evaluation"]["n_video_episodes"], 
+                n_episodes=config["evaluation"]["n_video_episodes"],
                 prefix="final"
             )
-        
+
         # Save VecNormalize stats plots if requested
         if save_stats:
             print("--- Generating and saving VecNormalize statistics ---")
-            plot_and_save_stats(train_env, "train_env", norm_obs_keys)
             plot_and_save_stats(eval_env, "eval_env", norm_obs_keys)
-        
+
         # Clean up
         del model
-        train_env.close()
         eval_env.close()
-        
+
         print(f"--- Evaluation completed for run: {run_name} ---")
 
 if __name__ == '__main__':
@@ -277,9 +399,35 @@ if __name__ == '__main__':
     # Get evaluation options
     render_video = input("Render final performance video? (y/n): ").lower() == 'y'
     save_statistics = input("Save VecNormalize statistics? (y/n): ").lower() == 'y'
+
+    run_shap = input("Run SHAP beeswarm evaluation? (y/n): ").lower() == 'y'
     
     try:
+        # Optionally set difficulty for evaluation
+        set_difficulty = input("Set evaluation environment difficulty? (leave blank for default): ").strip()
+        difficulty_val = None
+        if set_difficulty:
+            try:
+                difficulty_val = float(set_difficulty)
+            except ValueError:
+                print("Invalid difficulty value. Using default.")
+                difficulty_val = None
+
+        # Evaluation
         run_evaluation(run_id_input, render_final_video=render_video, save_stats=save_statistics)
+
+        # SHAP evaluation
+        if run_shap:
+            config = load_config("config.json")
+            model, eval_env, norm_obs_keys = load_trained_model_and_envs(run_id_input, "", config)
+            if difficulty_val is not None:
+                try:
+                    eval_env.envs[0].unwrapped.set_difficulty(difficulty_val)
+                    print(f"Set evaluation environment difficulty to {difficulty_val}")
+                except Exception as e:
+                    print(f"Failed to set difficulty: {e}")
+            evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id_input)
+            eval_env.close()
         print("--- Evaluation completed successfully ---")
         print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
     except Exception as e:

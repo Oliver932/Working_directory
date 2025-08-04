@@ -735,11 +735,6 @@ if __name__ == '__main__':
         # Store the run ID for potential evaluation later
         current_run_id = mlflow.active_run().info.run_id
         
-        # Save run ID to a file for easy access
-        run_id_file = os.path.join(temp_dir, f"run_id_{run_name}.txt")
-        with open(run_id_file, 'w') as f:
-            f.write(current_run_id)
-        
         # Clean up model from memory
         del model
         
@@ -749,6 +744,5 @@ if __name__ == '__main__':
         
         print(f"--- MLflow Run Finished ---")
         print(f"Run ID: {current_run_id}")
-        print(f"Run ID saved to: {run_id_file}")
         print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
         
