@@ -121,36 +121,65 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
 
     difficulty_labels = [f"{p:.2f}" for p in difficulty_points]
 
-    # --- Plotting the results ---
-    fig, ax = plt.subplots(figsize=(15, 7))
-    ax.plot(difficulty_labels, collision_proportions, marker='o', linestyle='-', label='Collisions')
-    ax.plot(difficulty_labels, success_proportions, marker='o', linestyle='-', label='Successes')
-    ax.plot(difficulty_labels, visible_proportions, marker='o', linestyle='-', label='Visible')
-    ax.plot(difficulty_labels, calculable_proportions, marker='o', linestyle='-', label='Calculable')
-    ax.plot(difficulty_labels, invalid_setup_proportions, marker='o', linestyle='-', label='Invalid Setups')
-
-    ax.set_ylabel('Proportion')
-    ax.set_xlabel('Difficulty Level')
-    ax.set_title('Proportions by Difficulty Level')
-    ax.legend()
+    # --- Plotting the results with times on secondary axis ---
+    fig, ax1 = plt.subplots(figsize=(15, 7))
+    
+    # Plot proportions on primary y-axis
+    ax1.plot(difficulty_labels, collision_proportions, marker='o', linestyle='-', label='Collisions', color='red')
+    ax1.plot(difficulty_labels, success_proportions, marker='o', linestyle='-', label='Successes', color='green')
+    ax1.plot(difficulty_labels, visible_proportions, marker='o', linestyle='-', label='Visible', color='blue')
+    ax1.plot(difficulty_labels, calculable_proportions, marker='o', linestyle='-', label='Calculable', color='orange')
+    ax1.plot(difficulty_labels, invalid_setup_proportions, marker='o', linestyle='-', label='Invalid Setups', color='purple')
+    
+    ax1.set_ylabel('Proportion', color='black')
+    ax1.set_xlabel('Difficulty Level')
+    ax1.set_title('Proportions and Setup Times by Difficulty Level')
+    ax1.tick_params(axis='y', labelcolor='black')
+    
+    # Create secondary y-axis for setup times
+    ax2 = ax1.twinx()
+    ax2.plot(difficulty_labels, avg_setup_times, marker='s', linestyle='--', label='Avg Setup Time', color='brown', linewidth=2)
+    ax2.set_ylabel('Average Setup Time (s)', color='brown')
+    ax2.tick_params(axis='y', labelcolor='brown')
+    
+    # Combine legends
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
     plt.xticks(rotation=45, ha="right")
     fig.tight_layout()
     plt.show()
 
-    # --- Plotting setup times ---
-    fig2, ax2 = plt.subplots(figsize=(15, 7))
-    ax2.bar(difficulty_labels, avg_setup_times, color='skyblue')
-    ax2.set_ylabel('Average Setup Time (s)')
-    ax2.set_xlabel('Difficulty Level')
-    ax2.set_title('Average Setup Time by Difficulty Level')
-    plt.xticks(rotation=45, ha="right")
+    # --- Plot actual difficulty vs requested difficulty ---
+    # Calculate average actual difficulty for each difficulty level
+    avg_actual_difficulties = []
+    for i, difficulty in enumerate(difficulty_points):
+        # Find all successful attempts for this difficulty level
+        start_idx = i * n_runs
+        end_idx = (i + 1) * n_runs
+        actual_diffs_for_level = [e1_difficulties[j] for j in range(start_idx, end_idx) 
+                                if e1_outcomes[j] != 'Invalid Setup']
+        if actual_diffs_for_level:
+            avg_actual_difficulties.append(np.mean(actual_diffs_for_level))
+        else:
+            avg_actual_difficulties.append(0.0)
+    
+    fig2, ax3 = plt.subplots(figsize=(12, 7))
+    ax3.plot(difficulty_points, avg_actual_difficulties, marker='o', linestyle='-', label='Actual Difficulty', color='darkblue', linewidth=2)
+    ax3.plot(difficulty_points, difficulty_points, marker='', linestyle='--', label='Requested Difficulty', color='gray', alpha=0.7)
+    ax3.set_ylabel('Difficulty Level')
+    ax3.set_xlabel('Requested Difficulty Level')
+    ax3.set_title('Actual vs Requested Difficulty Level')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
     fig2.tight_layout()
     plt.show()
 
     # --- Aesthetically Pleasing Scatter plots of E1 positions ---
     plt.style.use('seaborn-v0_8-whitegrid')
     e1_positions = np.array(e1_positions)
-    fig3, (ax3, ax4) = plt.subplots(1, 2, figsize=(22, 10))
+    fig3, (ax4, ax5) = plt.subplots(1, 2, figsize=(22, 10))
     fig3.suptitle('Analysis of E1 End-Effector Positions', fontsize=20)
 
     # Filter data for the first plot to exclude failed setups
@@ -163,13 +192,13 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     y_min, y_max = e1_positions[:, 1].min() - 10, e1_positions[:, 1].max() + 10
 
     # Plot 1: E1 positions by difficulty (successful setups only)
-    scatter = ax3.scatter(successful_positions[:, 0], successful_positions[:, 1], c=successful_difficulties, cmap='coolwarm', alpha=0.7, s=15)
-    ax3.set_xlabel('E1 X Position (mm)', fontsize=12)
-    ax3.set_ylabel('E1 Y Position (mm)', fontsize=12)
-    ax3.set_title('Successful Positions by Difficulty', fontsize=16)
-    ax3.set_aspect('equal', adjustable='box')
-    ax3.set_xlim(x_min, x_max)
-    ax3.set_ylim(y_min, y_max)
+    scatter = ax4.scatter(successful_positions[:, 0], successful_positions[:, 1], c=successful_difficulties, cmap='coolwarm', alpha=0.7, s=15)
+    ax4.set_xlabel('E1 X Position (mm)', fontsize=12)
+    ax4.set_ylabel('E1 Y Position (mm)', fontsize=12)
+    ax4.set_title('Successful Positions by Difficulty', fontsize=16)
+    ax4.set_aspect('equal', adjustable='box')
+    ax4.set_xlim(x_min, x_max)
+    ax4.set_ylim(y_min, y_max)
     
     # Plot 2: E1 positions by outcome with visibility/calculability indicators
     # Marker meanings: Circle (o) = Visible+Calculable, Square (s) = Visible only, 
@@ -208,17 +237,17 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
                     else:
                         label_suffix = " (Neither)"
                 
-                ax4.scatter(e1_positions[indices, 0], e1_positions[indices, 1], 
+                ax5.scatter(e1_positions[indices, 0], e1_positions[indices, 1], 
                            c=color, marker=marker, label=f"{outcome}{label_suffix}", 
                            alpha=alpha, s=size, edgecolors='black', linewidth=0.5)
 
-    ax4.set_xlabel('E1 X Position (mm)', fontsize=12)
-    ax4.set_ylabel('E1 Y Position (mm)', fontsize=12)
-    ax4.set_title('All Positions by Outcome & Visibility/Calculability', fontsize=16)
-    ax4.set_aspect('equal', adjustable='box')
-    ax4.legend(title='Outcome & Ellipse Properties', fontsize=8, bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax4.set_xlim(x_min, x_max)
-    ax4.set_ylim(y_min, y_max)
+    ax5.set_xlabel('E1 X Position (mm)', fontsize=12)
+    ax5.set_ylabel('E1 Y Position (mm)', fontsize=12)
+    ax5.set_title('All Positions by Outcome & Visibility/Calculability', fontsize=16)
+    ax5.set_aspect('equal', adjustable='box')
+    ax5.legend(title='Outcome & Ellipse Properties', fontsize=8, bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax5.set_xlim(x_min, x_max)
+    ax5.set_ylim(y_min, y_max)
 
     # Add a shared colorbar for the difficulty plot
     fig3.subplots_adjust(right=0.75)  # Make more room for the legend
@@ -821,7 +850,7 @@ if __name__ == '__main__':
     ring_projector = RingProjector(robot, ring, vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"], method='custom')
     collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
     
-    test_ring_placement(robot, ring, ring_projector, collision_render_manager, set_random_pose_box_constraint)
+    test_ring_placement(robot, ring, ring_projector, collision_render_manager, set_random_pose_box_constraint_fixed_rotation)
 
     set_random_pose_box_constraint(robot, ring, collision_render_manager, difficulty=1)
     visualize_system(robot, ring=ring)
