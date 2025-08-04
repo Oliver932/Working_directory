@@ -28,7 +28,7 @@ grab_points_local:
   inner_grip_point_2: [4, -50, 46.5]    # Inner grip point 2 [approach, tangential, radial]
   gripper_back: [-38.5, 0, 0]           # Gripper back [approach, tangential, radial]
 camera_params:
-  local_pos_offset: [-30, 0, 0]         # Camera offset from G1 [approach, tangential, radial]
+  local_pos_offset: [-38.5, 50, 0]         # Camera offset from G1 [approach, tangential, radial]
   local_rotation_deg: [0, 0, 0]         # Camera rotation [rx, ry, rz] in degrees
 tilt_rx_limit_deg: 14                   # Max tilt in x (deg)
 
