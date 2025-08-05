@@ -31,8 +31,4 @@ camera_params:
   local_pos_offset: [-38.5, 50, 0]         # Camera offset from G1 [approach, tangential, radial]
   local_rotation_deg: [0, 0, 0]         # Camera rotation [rx, ry, rz] in degrees
 tilt_rx_limit_deg: 14                   # Max tilt in x (deg)
-
 tilt_rz_limit_deg: 50                   # Max tilt in z (deg)
-
-# Reachable radius for random pose generation around home position
-reachable_radius: 80.0                 # Maximum circular radius from home position (mm)
