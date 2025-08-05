@@ -14,7 +14,7 @@ from RL_implementation import CustomRobotEnv
 
 
 
-def evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id, n_background=100, n_eval=200):
+def evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id, n_background=100, n_eval=500):
     """
     Evaluate the model using SHAP and log feature importance plots to MLflow for each output dimension.
     Collects background and evaluation datasets, computes SHAP values, and logs grouped bar plots.
@@ -350,7 +350,7 @@ def load_trained_model_and_envs(run_id, run_name, config):
 
     return model, eval_env, norm_obs_keys
 
-def run_evaluation(run_id, render_final_video=True, save_stats=True):
+def run_evaluation(run_id, render_final_video=True, save_stats=True, run_shap=False, difficulty_val=None):
     """
     Run evaluation for a trained model using its MLflow run ID.
     Optionally records performance video, saves VecNormalize stats, and runs SHAP analysis.
@@ -363,12 +363,6 @@ def run_evaluation(run_id, render_final_video=True, save_stats=True):
     print(f"--- Starting evaluation for run: {run_name} (ID: {run_id}) ---")
     # Load configuration
     config = load_config("config.json")
-
-    # Accept new parameters: run_shap and difficulty_val
-    import inspect
-    frame = inspect.currentframe().f_back
-    run_shap = frame.f_locals.get('run_shap', False)
-    difficulty_val = frame.f_locals.get('difficulty_val', None)
 
     with mlflow.start_run(run_id=run_id):
         print(f"--- Resuming MLflow Run (Run ID: {run_id}) ---")
