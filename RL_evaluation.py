@@ -1,6 +1,24 @@
 import shap
+import os
+import json
+import numpy as np
+import pandas as pd
+import imageio
+import mlflow
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.monitor import Monitor
+
+# Import custom modules for the robot simulation
+from RL_implementation import CustomRobotEnv
+
+
+
 def evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id, n_background=100, n_eval=200):
-    """Evaluate the model using SHAP and log beeswarm plots for each output dimension to MLflow. Logs to the provided MLflow run_id."""
+    """
+    Evaluate the model using SHAP and log feature importance plots to MLflow for each output dimension.
+    Collects background and evaluation datasets, computes SHAP values, and logs grouped bar plots.
+    """
 
     # Use all keys from the observation space, in order
     obs_keys = list(eval_env.observation_space.spaces.keys())
@@ -121,21 +139,11 @@ def evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id, n_backgro
     plt.close()
     os.unlink(shap_grouped_bar_path)
     print("--- Grouped SHAP bar plot (per output) saved and logged to MLflow ---")
-import os
-import json
-import numpy as np
-import pandas as pd
-import imageio
-import mlflow
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from stable_baselines3.common.monitor import Monitor
-
-# Import custom modules for the robot simulation
-from RL_implementation import CustomRobotEnv
 
 def load_config(config_path="config.json"):
-    """Load configuration from JSON file with error handling."""
+    """
+    Load configuration from a JSON file with error handling for missing or invalid files.
+    """
     try:
         with open(config_path, 'r') as f:
             return json.load(f)
@@ -145,7 +153,10 @@ def load_config(config_path="config.json"):
         raise ValueError(f"Error parsing config file: {e}. Please check the JSON syntax in {config_path}.")
 
 def record_final_performance(model, eval_env, train_env, config, n_episodes=5, prefix="final"):
-    """Record the performance of a trained model and log videos to MLflow."""
+    """
+    Run the trained model in the evaluation environment, record videos, and log them to MLflow.
+    Optionally syncs difficulty from the training environment.
+    """
     
     def _sync_difficulty():
         """Synchronize difficulty from training environment to evaluation environment."""
@@ -194,7 +205,10 @@ def record_final_performance(model, eval_env, train_env, config, n_episodes=5, p
     print(f"--- {prefix} performance videos logged to MLflow ---")
 
 def plot_and_save_stats(vecnorm, name_prefix, norm_obs_keys):
-    """Generate and save VecNormalize statistics as CSV to MLflow."""
+    """
+    Generate and save VecNormalize statistics as a CSV file and log it to MLflow.
+    Handles both dict and array observation spaces.
+    """
     obs_rms = vecnorm.obs_rms
     summary_rows = []
     
@@ -267,7 +281,10 @@ def plot_and_save_stats(vecnorm, name_prefix, norm_obs_keys):
         print(f"--- {name_prefix} VecNormalize stats saved to MLflow ---")
 
 def load_trained_model_and_envs(run_id, run_name, config):
-    """Load a trained model and create environments for evaluation."""
+    """
+    Load a trained model and VecNormalize wrapper from MLflow artifacts and create evaluation environments.
+    Returns the model, evaluation environment, and normalized observation keys.
+    """
     
     # Set MLflow tracking URI
     mlflow.set_tracking_uri("file:///C:/temp/mlruns")
@@ -333,35 +350,28 @@ def load_trained_model_and_envs(run_id, run_name, config):
 
     return model, eval_env, norm_obs_keys
 
-    # Load model
-    model = PPO.load(model_file)
-
-    # Clean up downloaded files
-    os.unlink(model_file)
-    os.unlink(vecnorm_file)
-    os.rmdir(model_path)
-
-    return model, eval_env, norm_obs_keys
-
 def run_evaluation(run_id, render_final_video=True, save_stats=True):
-    """Run evaluation for a trained model using its MLflow run ID."""
-    
+    """
+    Run evaluation for a trained model using its MLflow run ID.
+    Optionally records performance video, saves VecNormalize stats, and runs SHAP analysis.
+    """
     # Set MLflow tracking URI
     mlflow.set_tracking_uri("file:///C:/temp/mlruns")
-    
     # Get run information to retrieve the run name and config
     run = mlflow.get_run(run_id)
     run_name = run.data.tags.get('mlflow.runName', 'unknown_run')
-    
     print(f"--- Starting evaluation for run: {run_name} (ID: {run_id}) ---")
-    
     # Load configuration
     config = load_config("config.json")
-    
-    # Continue the existing MLflow run to add evaluation artifacts
+
+    # Accept new parameters: run_shap and difficulty_val
+    import inspect
+    frame = inspect.currentframe().f_back
+    run_shap = frame.f_locals.get('run_shap', False)
+    difficulty_val = frame.f_locals.get('difficulty_val', None)
+
     with mlflow.start_run(run_id=run_id):
         print(f"--- Resuming MLflow Run (Run ID: {run_id}) ---")
-        
         # Load model and environments
         model, eval_env, norm_obs_keys = load_trained_model_and_envs(run_id, run_name, config)
 
@@ -381,29 +391,35 @@ def run_evaluation(run_id, render_final_video=True, save_stats=True):
             print("--- Generating and saving VecNormalize statistics ---")
             plot_and_save_stats(eval_env, "eval_env", norm_obs_keys)
 
+        # SHAP evaluation
+        if run_shap:
+            if difficulty_val is not None:
+                try:
+                    eval_env.envs[0].unwrapped.set_difficulty(difficulty_val)
+                    print(f"Set evaluation environment difficulty to {difficulty_val}")
+                except Exception as e:
+                    print(f"Failed to set difficulty: {e}")
+            evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id)
+
         # Clean up
         del model
         eval_env.close()
 
         print(f"--- Evaluation completed for run: {run_name} ---")
+        print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
 
 if __name__ == '__main__':
     print("--- RL Evaluation Script ---")
-    
     # Get run ID from user
     run_id_input = input("Enter the MLflow Run ID to evaluate: ").strip()
     if not run_id_input:
         print("No Run ID provided. Exiting.")
         exit(1)
-    
     # Get evaluation options
     render_video = input("Render final performance video? (y/n): ").lower() == 'y'
     save_statistics = input("Save VecNormalize statistics? (y/n): ").lower() == 'y'
-
     run_shap = input("Run SHAP beeswarm evaluation? (y/n): ").lower() == 'y'
-    
     try:
-        # Optionally set difficulty for evaluation
         set_difficulty = input("Set evaluation environment difficulty? (leave blank for default): ").strip()
         difficulty_val = None
         if set_difficulty:
@@ -412,24 +428,15 @@ if __name__ == '__main__':
             except ValueError:
                 print("Invalid difficulty value. Using default.")
                 difficulty_val = None
-
-        # Evaluation
-        run_evaluation(run_id_input, render_final_video=render_video, save_stats=save_statistics)
-
-        # SHAP evaluation
-        if run_shap:
-            config = load_config("config.json")
-            model, eval_env, norm_obs_keys = load_trained_model_and_envs(run_id_input, "", config)
-            if difficulty_val is not None:
-                try:
-                    eval_env.envs[0].unwrapped.set_difficulty(difficulty_val)
-                    print(f"Set evaluation environment difficulty to {difficulty_val}")
-                except Exception as e:
-                    print(f"Failed to set difficulty: {e}")
-            evaluate_with_SHAP(model, eval_env, config, norm_obs_keys, run_id_input)
-            eval_env.close()
+        # Pass run_shap and difficulty_val to run_evaluation
+        run_evaluation(
+            run_id_input,
+            render_final_video=render_video,
+            save_stats=save_statistics,
+            run_shap=run_shap,
+            difficulty_val=difficulty_val
+        )
         print("--- Evaluation completed successfully ---")
-        print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
     except Exception as e:
         print(f"Error during evaluation: {e}")
         import traceback
