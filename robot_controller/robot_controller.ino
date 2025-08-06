@@ -18,6 +18,7 @@ const int homeSwitch2 = A1;
 const int homeSwitch3 = A2;
 const int homeSwitch4 = A3;
 
+
 //---------------------------------------------------------------------------------
 // Motion & Position Variables
 //---------------------------------------------------------------------------------
@@ -204,7 +205,7 @@ void handleHoming() {
     homingInProgress = false;
     isHomed = true;
 
-    Serial.println("HOMED"); // Signal that the machine is ready for commands.
+    Serial.println("DONE"); // Signal that the machine is ready for commands.
   }
 }
 
@@ -282,6 +283,7 @@ void loop() {
     digitalWrite(10, LOW); // Turn off the gripper motor.
     digitalWrite(11, LOW);
     triggerStartTime = 0; // Reset the timer start time.
+    Serial.println("DONE");
   }
 
   // --- 4. Move Completion Check ---
