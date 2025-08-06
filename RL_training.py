@@ -429,7 +429,12 @@ class CustomRobotEnv(gym.Env):
         should_grip = action[4] > 0.0
 
         if should_grip:
+            
+            #update robot gripped state
+            self.robot.gripped = True
+
             self.grip_attempts += 1
+            
             if self.robot.evaluate_grip(self.ring):
                 reward += self.rewards["success"]
                 terminated = True
@@ -443,6 +448,11 @@ class CustomRobotEnv(gym.Env):
                     reward += self.rewards["collision"]
                     self.is_collision = True
                     terminated = True
+
+        else:
+
+            # update robot gripped state
+            self.robot.gripped = False
 
         if not terminated:
             self.robot.move_E1(

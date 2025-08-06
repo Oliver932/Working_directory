@@ -326,6 +326,17 @@ def load_trained_model_and_envs(run_id, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR
         eval_env = VecNormalize.load(vecnorm_file, eval_env)
         model = PPO.load(model_file)
 
+        # --- NEW: Pull last difficulty from MLflow metrics and set it ---
+        client = mlflow.tracking.MlflowClient()
+        metric_history = client.get_metric_history(run_id, "tb_curriculum_current_difficulty")
+        if metric_history:
+            last_difficulty = metric_history[-1].value
+            try:
+                eval_env.envs[0].unwrapped.set_difficulty(last_difficulty)
+                print(f"Set evaluation environment difficulty to last trained value: {last_difficulty}")
+            except Exception as e:
+                print(f"Failed to set difficulty from MLflow metric: {e}")
+
         # Clean up downloaded artifacts
         shutil.rmtree(artifact_dir)
 
@@ -346,7 +357,7 @@ if __name__ == '__main__':
     run_shap = input("Run SHAP evaluation? (y/n): ").lower() == 'y'
     
     difficulty_val = None
-    set_difficulty = input("Set evaluation environment difficulty? (leave blank for default): ").strip()
+    set_difficulty = input("Set evaluation environment difficulty? (leave blank for last training value): ").strip()
     if set_difficulty:
         try:
             difficulty_val = float(set_difficulty)

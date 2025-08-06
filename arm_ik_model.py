@@ -203,7 +203,9 @@ class RobotKinematics:
         # Gripper points
         self.outer_grip_point = self.inner_grip_point_1 = np.zeros(3, dtype=np.float32)
         self.inner_grip_point_2 = self.gripper_back = np.zeros(3, dtype=np.float32)
-        
+
+        self.gripped = False # track if the gripper is open
+
         # Camera
         self.camera_pos = self.camera_view_vector = self.camera_up_vector = np.zeros(3, dtype=np.float32)
         

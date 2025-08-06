@@ -9,7 +9,7 @@ A_end:
   A2: [139.73, 0, 0]     # Actuator 2 end position [x, y, z]
   A3: [-38.5, 0, 120.88] # Actuator 3 end position [x, y, z]
   A4: [38.5, 0, 120.88]  # Actuator 4 end position [x, y, z]
-E1_home:
+E1_home: # this is the arbitrary home position from which the robot starts for training NOT the zero actuator position
   x: -50         # Home E1 x position
   y: 300       # Home E1 y position
   rx: 0        # Home E1 rotation about x (deg)
