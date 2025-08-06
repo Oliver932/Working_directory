@@ -240,7 +240,7 @@ void loop() {
       startHoming();
     
     // --- Coordinate Move Command ---
-    } else if (command != "0,0,0,0" && isHomed) {
+    } else if (command != "0,0,0,0") {
       // Find the positions of the commas to parse the coordinate string.
       int comma1 = command.indexOf(',');
       int comma2 = command.indexOf(',', comma1 + 1);
@@ -304,10 +304,15 @@ void loop() {
   // This section must be called as often as possible. The .run() function
   // calculates and executes steps based on the current speed and acceleration.
   // It only runs the motors if the machine has been homed.
-  if (isHomed) {
-    stepper1.run();
-    stepper2.run();
-    stepper3.run();
-    stepper4.run();
-  }
+  // if (isHomed) {
+  //   stepper1.run();
+  //   stepper2.run();
+  //   stepper3.run();
+  //   stepper4.run();
+  // }
+
+  stepper1.run();
+  stepper2.run();
+  stepper3.run();
+  stepper4.run();
 }

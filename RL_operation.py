@@ -8,8 +8,8 @@ import numpy as np
 
 # The maximum travel distance of the linear actuators (in millimeters).
 ACTUATOR_LIMIT = 400
-# This is calculated from a 2mm pitch leadscrew and a stepper motor with 400 steps per revolution.
-DIST_PER_STEP = 2 / 400
+# This is calculated from a 2mm pitch leadscrew (it has 8mm lead but 2mm pitch!!) and a stepper motor with 400 steps per revolution.
+DIST_PER_STEP = 8 / 400
 
 # --- Mock Serial for Simulation Mode ---
 class MockSerial:
@@ -99,6 +99,8 @@ class RealRobot:
 
         # Format the extensions as a comma-separated string
         extensions_str = ','.join(str(float(e) * ACTUATOR_LIMIT / DIST_PER_STEP) for e in self.extensions)
+
+        print(f"Setting robot position with actuator steps: {extensions_str}")
         self.arduino.write((extensions_str + '\n').encode('utf-8'))
 
         # Wait for Arduino to confirm position setting
