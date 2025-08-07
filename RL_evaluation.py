@@ -114,50 +114,72 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
         explainer = shap.KernelExplainer(model_predict, background)
         shap_values = explainer.shap_values(eval_data)
 
-        # 5. Generate feature importance plot
+        # 5. Generate and save 5 SHAP heatmaps (one per action/output), laid out as in RL_operation.py
         temp_dir = TEMP_DIR
         os.makedirs(temp_dir, exist_ok=True)
 
-        # Prepare feature names
-        feature_names = []
+        # Prepare feature names and heatmap layout info
+        obs_heatmap_xlabels = []  # column labels (keys)
+        obs_heatmap_shape = []    # number of rows for each key
+        flat_idx = 0
         for k in obs_keys:
             space = eval_env.observation_space.spaces[k]
-            if np.prod(space.shape) == 1:
-                feature_names.append(k)
-            else:
-                for j in range(np.prod(space.shape)):
-                    feature_names.append(f"{k}[{j}]")
+            dim = np.prod(space.shape)
+            obs_heatmap_xlabels.append(k)
+            obs_heatmap_shape.append(dim)
+            flat_idx += dim
+        max_rows = max(obs_heatmap_shape)
+        n_cols = len(obs_heatmap_xlabels)
 
-        # Compute mean absolute SHAP values for each feature and output
+        # Prepare SHAP values array: (n_eval, n_features, n_outputs)
         if isinstance(shap_values, list):
-            shap_arr = np.stack(shap_values, axis=-1)  # (n_samples, n_features, n_outputs)
+            # List of arrays, one per output: each (n_eval, n_features)
+            shap_arr = np.stack(shap_values, axis=-1)  # (n_eval, n_features, n_outputs)
         else:
-            shap_arr = shap_values  # already (n_samples, n_features, n_outputs)
+            shap_arr = shap_values  # already (n_eval, n_features, n_outputs)
+
+
+        # Average over samples for each output (feature importance = mean absolute SHAP)
         mean_abs_shap = np.mean(np.abs(shap_arr), axis=0)  # (n_features, n_outputs)
 
-        # Create grouped bar chart
-        n_features, n_outputs = mean_abs_shap.shape
-        x = np.arange(n_features)
-        bar_width = 0.8 / n_outputs
+        # Create a figure with 5 heatmaps (one per output/action)
+        n_outputs = mean_abs_shap.shape[1]
+        n_heatmaps = min(5, n_outputs)
+        action_labels = ['Delta X', 'Delta Y', 'Delta RX', 'Delta RZ', 'Grip Signal']
+        fig, axes = plt.subplots(n_heatmaps, 1, figsize=(8, 2.5 * n_heatmaps))
+        if n_heatmaps == 1:
+            axes = [axes]
 
-        plt.figure(figsize=(max(12, n_features // 2), 6))
-        for i in range(n_outputs):
-            plt.bar(x + i * bar_width, mean_abs_shap[:, i], width=bar_width, label=f'Output {i}')
+        # For each output/action, build a 2D heatmap (rows: max_rows, cols: n_cols)
+        for i in range(n_heatmaps):
+            heatmap_data = np.full((max_rows, n_cols), np.nan)
+            feature_idx = 0
+            for col, n_row in enumerate(obs_heatmap_shape):
+                for row in range(n_row):
+                    heatmap_data[row, col] = mean_abs_shap[feature_idx, i]
+                    feature_idx += 1
+            ax = axes[i]
+            vmax = np.max(mean_abs_shap)
+            label = action_labels[i] if i < len(action_labels) else f"Action {i}"
+            img = ax.imshow(heatmap_data, aspect='auto', cmap='Reds', vmin=0, vmax=vmax)
+            ax.set_title(f"{label} Feature Importance", color=plt.cm.tab10(i))
+            cbar = plt.colorbar(img, ax=ax, orientation='vertical', pad=0.01, aspect=20)
+            cbar.set_label('Mean |SHAP| (Importance)')
+            ax.set_xticks(np.arange(n_cols))
+            ax.set_xticklabels(obs_heatmap_xlabels, rotation=30, ha='right')
+            ax.set_yticks(np.arange(max_rows))
+            ax.set_yticklabels([str(j) for j in range(max_rows)])
+        fig.suptitle('SHAP Feature Importance Heatmaps (per Action)', fontweight='bold')
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
 
-        plt.xticks(x + bar_width * (n_outputs - 1) / 2, feature_names, rotation=90)
-        plt.ylabel("Mean |SHAP value|")
-        plt.title("Feature Importance per Output Dimension")
-        plt.legend()
-        plt.tight_layout()
+        # Save and log the figure
+        shap_heatmap_path = os.path.join(temp_dir, "shap_action_heatmaps.png")
+        plt.savefig(shap_heatmap_path)
+        mlflow.log_artifact(shap_heatmap_path, artifact_path="shap")
+        plt.close(fig)
+        os.unlink(shap_heatmap_path)
 
-        # Save and log plot
-        shap_grouped_bar_path = os.path.join(temp_dir, "shap_grouped_bar.png")
-        plt.savefig(shap_grouped_bar_path)
-        mlflow.log_artifact(shap_grouped_bar_path, artifact_path="shap")
-        plt.close()
-        os.unlink(shap_grouped_bar_path)
-    
-    print("--- Grouped SHAP bar plot (per output) saved and logged to MLflow ---")
+    print("--- SHAP action heatmaps (per output) saved and logged to MLflow ---")
 
 def record_final_performance(run_id, model, eval_env, n_episodes=5, prefix="final", MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
     """
