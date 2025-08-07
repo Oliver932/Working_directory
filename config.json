@@ -1,6 +1,6 @@
 {
     "training": {
-        "total_timesteps": 30000,
+        "total_timesteps": 200000,
         "ppo_policy": "MultiInputPolicy",
         "verbose": 1
     },

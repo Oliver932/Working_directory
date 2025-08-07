@@ -26,6 +26,8 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
     Collects background and evaluation datasets, computes SHAP values, and logs grouped bar plots.
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
+    # Ensure temp directory exists before saving files
+    os.makedirs(TEMP_DIR, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         # Use all keys from the observation space, in order
@@ -33,15 +35,18 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
 
         # 1. Collect background dataset (observations from random rollouts)
         obs_list = []
+        obs_dict_list = []  # Store unflattened dict observations for SHAP
         for _ in range(n_background):
             obs = eval_env.reset()
             done = [False]
             while not done[0]:
-                # Flatten dict obs if needed
+                # Store both flattened and dict format
                 if isinstance(obs, dict):
                     flat_obs = np.concatenate([obs[k].flatten() for k in obs_keys if k in obs])
+                    obs_dict_list.append(obs.copy())  # Store original dict format
                 else:
                     flat_obs = obs.flatten()
+                    obs_dict_list.append({'obs': obs})  # Wrap single obs in dict format
                 obs_list.append(flat_obs)
                 action, _ = model.predict(obs, deterministic=True)
                 obs, _, done, _ = eval_env.step(action)
@@ -49,7 +54,24 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
                     break
             if len(obs_list) >= n_background:
                 break
+
+        # Stack the collected background observations into numpy arrays
         background = np.stack(obs_list[:n_background])
+        background_dict = obs_dict_list[:n_background]
+
+        # --- Save both background datasets as artifacts ---
+        # Save flattened version (for compatibility)
+        background_path = os.path.join(TEMP_DIR, "shap_background.npy")
+        np.save(background_path, background)
+        mlflow.log_artifact(background_path, artifact_path="shap")
+        os.unlink(background_path)
+        
+        # Save dict version (for easier SHAP usage)
+        background_dict_path = os.path.join(TEMP_DIR, "shap_background_dict.npy")
+        np.save(background_dict_path, background_dict, allow_pickle=True)
+        mlflow.log_artifact(background_dict_path, artifact_path="shap")
+        os.unlink(background_dict_path)
+        print(f"Saved both flattened ({background.shape}) and dict format background datasets.")
 
         # 2. Collect evaluation dataset (for SHAP explanation)
         eval_obs_list = []
@@ -142,6 +164,8 @@ def record_final_performance(run_id, model, eval_env, n_episodes=5, prefix="fina
     Run the trained model in the evaluation environment, record videos, and log them to MLflow.
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
+    # Ensure temp directory exists before saving files
+    os.makedirs(TEMP_DIR, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         overview_frames, robot_perspective_frames = [], []
@@ -184,6 +208,8 @@ def plot_and_save_stats(run_id, vecnorm, name_prefix, MLFLOW_URI=MLFLOW_URI, TEM
     Handles both dict and array observation spaces.
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
+    # Ensure temp directory exists before saving files
+    os.makedirs(TEMP_DIR, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         obs_rms = vecnorm.obs_rms
