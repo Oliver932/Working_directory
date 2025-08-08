@@ -92,6 +92,7 @@ class RingProjector:
         )
         self.method = method
         self.projected_properties = {}
+        self.last_obs = None
 
         # Pre-calculate constant values for point generation and projection
         self.num_ring_points = 20
@@ -193,6 +194,8 @@ class RingProjector:
         """
         Updates the state of the projector from the robot and ring objects and recalculates the ellipse properties.
         """
+        self.last_obs = self.projected_properties.copy() if self.projected_properties else None
+
         self.ring_position = np.array(self.ring.position, dtype=float)
         self.ring_radius = float(self.ring.outer_radius)
         self.ring_normal = np.array(self.ring.approach_vec, dtype=float)
@@ -245,12 +248,12 @@ class RingProjector:
         in_front_mask = dist_forward > 0
         if np.count_nonzero(in_front_mask) < 5:
             # RL-friendly: return last valid observation with zero deltas if available
-            last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
-            if last_obs:
-                last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
-                last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
-                last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
-                return last_obs
+            self.last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
+            if self.last_obs:
+                self.last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
+                self.last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
+                self.last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
+                return self.last_obs
             # Fallback to zeros if no valid observation yet
             return {
                 "visible": False,
@@ -277,35 +280,7 @@ class RingProjector:
         y_proj = (y_view * inv_dist) / (2 * tan_v_fov)
         
         projected_points_2d = np.stack((x_proj, y_proj), axis=1)
-
-        # #!!!!
-        # # Filter to keep only points that are within the normalized screen space !!!!! THIS IS GOING TO HAVE A HUGE PERFORMANCE IMPACT !!!!!
-        # visible_mask = (projected_points_2d[:, 0] >= -0.5) & (projected_points_2d[:, 0] <= 0.5) & \
-        #                (projected_points_2d[:, 1] >= -0.5) & (projected_points_2d[:, 1] <= 0.5)
-        # projected_points_2d = projected_points_2d[visible_mask]
-
-        # if len(projected_points_2d) < 5:
-        #     #RL-friendly: return last valid observation with zero deltas if available
-        #     last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
-        #     if last_obs:
-        #         last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
-        #         last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
-        #         last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
-        #         return last_obs
-        #     # Fallback to zeros if no valid observation yet
-        #     return {
-        #         "visible": False,
-        #         "calculable": False,
-        #         "center_2d": np.array([0, 0], dtype=np.float32),
-        #         "delta_center_2d": np.array([0, 0], dtype=np.float32),
-        #         "semi_major_vector": np.array([0, 0], dtype=np.float32),
-        #         "semi_minor_vector": np.array([0, 0], dtype=np.float32),
-        #         "delta_semi_major_vector": np.array([0, 0], dtype=np.float32),
-        #         "delta_semi_minor_vector": np.array([0, 0], dtype=np.float32)
-        #     }
-        #!!!! END OF KEY ALTERATION !!!!!
         
-
         # --- 3. Fit Ellipse ---
         points_for_fit_x = (projected_points_2d[:, 0] + 0.5) * img_w
         points_for_fit_y = (-projected_points_2d[:, 1] + 0.5) * img_h
@@ -322,7 +297,7 @@ class RingProjector:
         y_coords = projected_points_2d[:, 1]
         visible_mask = ((x_coords >= -0.5) & (x_coords <= 0.5) & 
                        (y_coords >= -0.5) & (y_coords <= 0.5))
-        center_visible = np.any(visible_mask)
+        ellipse_visible = np.any(visible_mask)
 
         # OpenCV's angle corresponds to d1_px, but we need to ensure it corresponds to the major axis
         if d1_px >= d2_px:
@@ -354,7 +329,7 @@ class RingProjector:
         center_2d = np.array([center_x_proj, center_y_proj], dtype=np.float32)
 
         return {
-            "visible": center_visible,
+            "visible": ellipse_visible,
             "calculable": True,
             "center_2d": center_2d,
             "delta_center_2d": delta_center_2d,
@@ -383,12 +358,12 @@ class RingProjector:
         
         if len(points_to_fit) < 5:
             # RL-friendly: return last valid observation with zero deltas if available
-            last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
-            if last_obs:
-                last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
-                last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
-                last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
-                return last_obs
+            self.last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
+            if self.last_obs:
+                self.last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
+                self.last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
+                self.last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
+                return self.last_obs
             # Fallback to zeros if no valid observation yet
             return {
                 "visible": False,
@@ -410,7 +385,7 @@ class RingProjector:
 
         # For render method, we need to check if rendered points are visible
         # Since we already have the points that were used for ellipse fitting
-        center_visible = len(points_to_fit) > 0  # If we found points to fit, some are visible
+        ellipse_visible = len(points_to_fit) > 0  # If we found points to fit, some are visible
 
         # OpenCV's angle corresponds to d1_px, but we need to ensure it corresponds to the major axis
         if d1_px >= d2_px:
@@ -442,7 +417,7 @@ class RingProjector:
         center_2d = np.array([center_x_proj, center_y_proj], dtype=np.float32)
 
         return {
-            "visible": center_visible,
+            "visible": ellipse_visible,
             "calculable": True,
             "center_2d": center_2d,
             "delta_center_2d": delta_center_2d,

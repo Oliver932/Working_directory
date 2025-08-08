@@ -365,23 +365,47 @@ class CustomRobotEnv(gym.Env):
         
         ellipse_details = self.ring_projector.projected_properties
 
-        observations = {
-            "ellipse_position":  ellipse_details['center_2d'],
-            "delta_ellipse_position": ellipse_details['delta_center_2d'],
-            "ellipse_semi_major_vector": ellipse_details['semi_major_vector'],
-            "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'],
-            "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'],
-            "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'],
-            "ellipse_visible": np.array([1] if ellipse_details.get('calculable', False) else [0], dtype=np.int8),
+        if ellipse_details.get('visible', True):
 
-            "actuator_extensions": self.robot.extensions,
-            "delta_extensions": self.robot.delta_extensions,
-            "E1_position": self.robot.E1,
-            "delta_E1": self.robot.delta_E1,
-            "E1_quaternion": self.robot.E1_quaternion,
-            "delta_E1_quaternion": self.robot.delta_E1_quaternion,
-            "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
-        }
+            observations = {
+                "ellipse_position":  ellipse_details['center_2d'],
+                "delta_ellipse_position": ellipse_details['delta_center_2d'],
+                "ellipse_semi_major_vector": ellipse_details['semi_major_vector'],
+                "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'],
+                "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'],
+                "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'],
+                "ellipse_visible": np.array([1] if ellipse_details.get('visible', False) else [0], dtype=np.int8),
+
+                "actuator_extensions": self.robot.extensions,
+                "delta_extensions": self.robot.delta_extensions,
+                "E1_position": self.robot.E1,
+                "delta_E1": self.robot.delta_E1,
+                "E1_quaternion": self.robot.E1_quaternion,
+                "delta_E1_quaternion": self.robot.delta_E1_quaternion,
+                "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
+            }
+
+        else:
+
+            ellipse_details = self.ring_projector.last_obs
+
+            observations = {
+                "ellipse_position":  ellipse_details['center_2d'],
+                "delta_ellipse_position": ellipse_details['delta_center_2d'],
+                "ellipse_semi_major_vector": ellipse_details['semi_major_vector'],
+                "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'],
+                "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'],
+                "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'],
+                "ellipse_visible": np.zeros(1 , dtype=np.int8),  # Not visible
+
+                "actuator_extensions": self.robot.extensions,
+                "delta_extensions": self.robot.delta_extensions,
+                "E1_position": self.robot.E1,
+                "delta_E1": self.robot.delta_E1,
+                "E1_quaternion": self.robot.E1_quaternion,
+                "delta_E1_quaternion": self.robot.delta_E1_quaternion,
+                "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
+            }
 
         return self._add_observation_noise(observations)
 
@@ -443,13 +467,13 @@ class CustomRobotEnv(gym.Env):
                 reward += self.rewards["fail_grip"]
                 self.failed_grips += 1
                 # Check for collision even after failed grip
-                # self.collision_render_manager.update_poses(self.robot, self.ring)
-                # if self.collision_render_manager.check_collision():
-                #     reward += self.rewards["collision"]
-                #     self.is_collision = True
-                #     terminated = True
+                self.collision_render_manager.update_poses(self.robot, self.ring)
+                if self.collision_render_manager.check_collision():
+                    reward += self.rewards["collision"]
+                    self.is_collision = True
+                    terminated = True
 
-                terminated = True  # NEW ADDITION END ON FAILED GRIP
+                # terminated = True  # NEW ADDITION END ON FAILED GRIP
         else:
 
             # update robot gripped state
@@ -486,8 +510,8 @@ class CustomRobotEnv(gym.Env):
         # Calculate improvement rewards (only after first step when previous distances exist)
         if self.previous_dist_E1 is not None:
             # Reward improvement (movement towards goal)
-            improvement_E1 = (self.previous_dist_E1 - current_dist_E1) * 0.01
-            improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion) * 0.01
+            improvement_E1 = (self.previous_dist_E1 - current_dist_E1)
+            improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion)
             
             # Scale the improvement rewards
             reward += improvement_E1 # Reward position improvement
