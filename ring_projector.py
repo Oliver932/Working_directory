@@ -94,7 +94,7 @@ class RingProjector:
         self.projected_properties = {}
 
         # Pre-calculate constant values for point generation and projection
-        self.num_ring_points = 25
+        self.num_ring_points = 20
         theta = np.linspace(0, 2 * np.pi, self.num_ring_points)
         self.cos_theta = np.cos(theta)
         self.sin_theta = np.sin(theta)
@@ -277,6 +277,34 @@ class RingProjector:
         y_proj = (y_view * inv_dist) / (2 * tan_v_fov)
         
         projected_points_2d = np.stack((x_proj, y_proj), axis=1)
+
+        # #!!!!
+        # # Filter to keep only points that are within the normalized screen space !!!!! THIS IS GOING TO HAVE A HUGE PERFORMANCE IMPACT !!!!!
+        # visible_mask = (projected_points_2d[:, 0] >= -0.5) & (projected_points_2d[:, 0] <= 0.5) & \
+        #                (projected_points_2d[:, 1] >= -0.5) & (projected_points_2d[:, 1] <= 0.5)
+        # projected_points_2d = projected_points_2d[visible_mask]
+
+        # if len(projected_points_2d) < 5:
+        #     #RL-friendly: return last valid observation with zero deltas if available
+        #     last_obs = self.projected_properties.copy() if self.projected_properties and self.projected_properties.get("calculable", False) else None
+        #     if last_obs:
+        #         last_obs["delta_center_2d"] = np.zeros(2, dtype=np.float32)
+        #         last_obs["delta_semi_major_vector"] = np.zeros(2, dtype=np.float32)
+        #         last_obs["delta_semi_minor_vector"] = np.zeros(2, dtype=np.float32)
+        #         return last_obs
+        #     # Fallback to zeros if no valid observation yet
+        #     return {
+        #         "visible": False,
+        #         "calculable": False,
+        #         "center_2d": np.array([0, 0], dtype=np.float32),
+        #         "delta_center_2d": np.array([0, 0], dtype=np.float32),
+        #         "semi_major_vector": np.array([0, 0], dtype=np.float32),
+        #         "semi_minor_vector": np.array([0, 0], dtype=np.float32),
+        #         "delta_semi_major_vector": np.array([0, 0], dtype=np.float32),
+        #         "delta_semi_minor_vector": np.array([0, 0], dtype=np.float32)
+        #     }
+        #!!!! END OF KEY ALTERATION !!!!!
+        
 
         # --- 3. Fit Ellipse ---
         points_for_fit_x = (projected_points_2d[:, 0] + 0.5) * img_w

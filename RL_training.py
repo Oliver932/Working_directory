@@ -228,7 +228,6 @@ class CustomRobotEnv(gym.Env):
         self.MAX_STEPS_PER_EPISODE = self.config["max_steps"]
         self.rewards = self.config["rewards"]
         self.multipliers = self.config["multipliers"]
-        self.ellipse_scale_factor = self.config["ellipse_scale_factor"]
         
         # Difficulty configuration
         difficulty_config = self.config["difficulty"]
@@ -369,10 +368,10 @@ class CustomRobotEnv(gym.Env):
         observations = {
             "ellipse_position":  ellipse_details['center_2d'],
             "delta_ellipse_position": ellipse_details['delta_center_2d'],
-            "ellipse_semi_major_vector": ellipse_details['semi_major_vector'] * self.ellipse_scale_factor,
-            "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'] * self.ellipse_scale_factor,
-            "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'] * self.ellipse_scale_factor,
-            "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'] * self.ellipse_scale_factor,
+            "ellipse_semi_major_vector": ellipse_details['semi_major_vector'],
+            "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'],
+            "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'],
+            "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'],
             "ellipse_visible": np.array([1] if ellipse_details.get('calculable', False) else [0], dtype=np.int8),
 
             "actuator_extensions": self.robot.extensions,
@@ -422,7 +421,8 @@ class CustomRobotEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         terminated = False
-        reward = self.rewards["time"] * self.current_step
+        # reward = self.rewards["time"] * self.current_step
+        reward = 0.0
         
         action = self._add_action_noise(action)
         pose_deltas = action[0:4]
@@ -443,12 +443,13 @@ class CustomRobotEnv(gym.Env):
                 reward += self.rewards["fail_grip"]
                 self.failed_grips += 1
                 # Check for collision even after failed grip
-                self.collision_render_manager.update_poses(self.robot, self.ring)
-                if self.collision_render_manager.check_collision():
-                    reward += self.rewards["collision"]
-                    self.is_collision = True
-                    terminated = True
+                # self.collision_render_manager.update_poses(self.robot, self.ring)
+                # if self.collision_render_manager.check_collision():
+                #     reward += self.rewards["collision"]
+                #     self.is_collision = True
+                #     terminated = True
 
+                terminated = True  # NEW ADDITION END ON FAILED GRIP
         else:
 
             # update robot gripped state
@@ -485,8 +486,8 @@ class CustomRobotEnv(gym.Env):
         # Calculate improvement rewards (only after first step when previous distances exist)
         if self.previous_dist_E1 is not None:
             # Reward improvement (movement towards goal)
-            improvement_E1 = self.previous_dist_E1 - current_dist_E1
-            improvement_quaternion = self.previous_dist_quaternion - current_dist_quaternion
+            improvement_E1 = (self.previous_dist_E1 - current_dist_E1) * 0.01
+            improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion) * 0.01
             
             # Scale the improvement rewards
             reward += improvement_E1 # Reward position improvement
@@ -674,7 +675,9 @@ if __name__ == '__main__':
             metrics_callback=custom_metrics_callback,
             **CONFIG["callbacks"]["curriculum_trainer"]
         )
-        active_callbacks = [custom_metrics_callback, curriculum_callback]
+        active_callbacks = [custom_metrics_callback, curriculum_callback] 
+        # active_callbacks = [custom_metrics_callback] #FROZEN curriculum for direct comparison
+
 
         if needs_eval_env:
             video_callback = VideoRecorderCallback(

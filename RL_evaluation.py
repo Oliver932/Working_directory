@@ -379,11 +379,25 @@ def load_trained_model_and_envs(run_id, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR
         metric_history = client.get_metric_history(run_id, "tb_curriculum_current_difficulty")
         if metric_history:
             last_difficulty = metric_history[-1].value
+            print(f"--- Last trained difficulty from MLflow: {last_difficulty} ---")
+
             try:
                 eval_env.envs[0].unwrapped.set_difficulty(last_difficulty)
                 print(f"Set evaluation environment difficulty to last trained value: {last_difficulty}")
+
             except Exception as e:
                 print(f"Failed to set difficulty from MLflow metric: {e}")
+        else:
+
+            try:
+                user_input = input("Last trained difficulty is unknown. Enter a new difficulty value: ").strip()
+                new_difficulty = float(user_input)
+                eval_env.envs[0].unwrapped.set_difficulty(new_difficulty)
+                print(f"Set evaluation environment difficulty to user input value: {new_difficulty}")
+
+            except Exception as e:
+                print(f"Failed to set difficulty from user input: {e}")
+
 
         # Clean up downloaded artifacts
         shutil.rmtree(artifact_dir)
