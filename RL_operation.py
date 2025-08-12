@@ -20,6 +20,10 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 from collections import deque
 import traceback
+import shap
+import mlflow
+import os
+import shutil
 
 # The maximum travel distance of the linear actuators (in millimeters).
 ACTUATOR_LIMIT = 400
@@ -209,8 +213,12 @@ def main():
                 bg_flat_file = art.path
                 break
         if bg_flat_file is not None:
+            # Use run-specific temp directory for SHAP background download
+            temp_dir_shap = os.path.join("C:/temp/artifacts", f"run_{mlflow_run_id}")
+            os.makedirs(temp_dir_shap, exist_ok=True)
+            
             with mlflow.start_run(run_id=mlflow_run_id):
-                bg_local_path = mlflow.artifacts.download_artifacts(run_id=mlflow_run_id, artifact_path=bg_flat_file)
+                bg_local_path = mlflow.artifacts.download_artifacts(run_id=mlflow_run_id, artifact_path=bg_flat_file, dst_path=temp_dir_shap)
             shap_background_flat = np.load(bg_local_path, allow_pickle=True)
             print(f"Loaded SHAP background dataset (flattened), {shap_background_flat.shape[0]} samples, {shap_background_flat.shape[1]} features")
             REDUCED_BG_SAMPLES = 20
@@ -731,6 +739,14 @@ def main():
 
     print("Episode finished. Closing serial connection.")
     real_robot.close()
+    
+    # Clean up run-specific temp directory
+    temp_dir_shap = os.path.join("C:/temp/artifacts", f"run_{mlflow_run_id}")
+    if os.path.exists(temp_dir_shap):
+        import shutil
+        shutil.rmtree(temp_dir_shap)
+        print(f"Cleaned up temporary directory: {temp_dir_shap}")
+    
     print("The plot window will remain open until you close it manually.")
     plt.ioff()
     plt.show(block=True)

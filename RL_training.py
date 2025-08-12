@@ -4,6 +4,7 @@ import numpy as np
 import os
 import imageio
 import glob
+import shutil
 from collections import deque
 import json
 
@@ -64,7 +65,7 @@ class VideoRecorderCallback(BaseCallback):
                     obs, _, done, _ = self.eval_env.step(action)
             
             # Use temporary files that get deleted after MLflow logging
-            temp_dir = "C:/temp/artifacts"
+            temp_dir = os.path.join("C:/temp/artifacts", f"run_{mlflow.active_run().info.run_id}")
             os.makedirs(temp_dir, exist_ok=True)
             
             overview_vid_path = os.path.join(temp_dir, f"step_{self.n_calls}_overview.mp4")
@@ -99,12 +100,15 @@ class CustomMetricsCallback(BaseCallback):
         self.failed_grip_rate_window = deque(maxlen=window_size)
         self.avg_difficulty_window = deque(maxlen=window_size)
         self.ellipse_visible_prop_window = deque(maxlen=window_size)
+        # Track whether episodes ended due to truncation (e.g., max steps reached)
+        self.truncated_episode_window = deque(maxlen=window_size)
 
     def _on_step(self) -> bool:
+        # Only log metrics at the end of an episode (when 'episode' info is present)
         if self.locals.get("infos")[0].get("episode"):
             info = self.locals.get("infos")[0]
             ep_len = info["episode"]["l"]
-            
+
             # --- Success Rate: Proportion of successful episodes ---
             self.success_rate_window.append(info.get("is_success", 0))
             success_rate = np.mean(self.success_rate_window)
@@ -141,6 +145,11 @@ class CustomMetricsCallback(BaseCallback):
             self.ellipse_visible_prop_window.append(visible_steps / ep_len if ep_len > 0 else 0)
             avg_visible_prop = np.mean(self.ellipse_visible_prop_window)
             self.logger.record("custom/ellipse_visible_proportion", avg_visible_prop)
+
+            # --- Truncated Episode Proportion: Proportion of episodes ending due to truncation (max steps) ---
+            self.truncated_episode_window.append(int(info.get("is_truncated", False)))
+            truncated_prop = np.mean(self.truncated_episode_window)
+            self.logger.record("custom/truncated_episode_proportion", truncated_prop)
 
         return True
 
@@ -225,7 +234,7 @@ class CustomRobotEnv(gym.Env):
         camera_settings = self.config["camera"]
         overview_camera_settings = self.config["overview_camera"]
 
-        # # --- Define Observation and Action Spaces ---
+        # --- Define Observation and Action Spaces ---
         # self.observation_space = spaces.Dict({
         #     # Ellipse position relative to G1 position
         #     "ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
@@ -382,6 +391,7 @@ class CustomRobotEnv(gym.Env):
         return {
             "is_success": self.is_success,
             "is_collision": self.is_collision,
+            "is_truncated": self.is_truncated,
             "is_invalid_move": self.is_invalid_move,
             "grip_attempts": self.grip_attempts,
             "failed_grips": self.failed_grips,
@@ -395,6 +405,7 @@ class CustomRobotEnv(gym.Env):
         # Reset episode-specific trackers
         self.is_success = False
         self.is_collision = False
+        self.is_truncated = False
         self.is_invalid_move = 0
         self.grip_attempts = 0
         self.failed_grips = 0
@@ -487,7 +498,12 @@ class CustomRobotEnv(gym.Env):
             reward += self.rewards["fail_move"]
             self.is_invalid_move += 1
 
-        truncated = self.current_step >= self.MAX_STEPS_PER_EPISODE
+        # Determine episode end state with mutual exclusivity (collision > success > truncation)
+        truncated = False
+        if not terminated:  # Only check for truncation if not already terminated
+            if self.current_step >= self.MAX_STEPS_PER_EPISODE:
+                self.is_truncated = True
+                truncated = True
         
         info = {}
         if terminated or truncated:
@@ -610,7 +626,7 @@ if __name__ == '__main__':
         mlflow.log_params(flat_config)
         
         # MLFLOW: Also save the full config as a JSON artifact for easy viewing
-        temp_dir = "C:/temp/artifacts"
+        temp_dir = os.path.join("C:/temp/artifacts", f"run_{mlflow.active_run().info.run_id}")
         os.makedirs(temp_dir, exist_ok=True)
         config_path = os.path.join(temp_dir, f"config_{run_name}.json")
         with open(config_path, 'w') as f:
@@ -710,7 +726,7 @@ if __name__ == '__main__':
         print("--- Training finished ---")
 
         # --- Save the Final Model ---
-        temp_dir = "C:/temp/artifacts"
+        temp_dir = os.path.join("C:/temp/artifacts", f"run_{mlflow.active_run().info.run_id}")
         os.makedirs(temp_dir, exist_ok=True)
         model_save_path = os.path.join(temp_dir, f"ppo_model_{run_name}.zip")
         print(f"--- Saving the model to {model_save_path} ---")
@@ -742,6 +758,12 @@ if __name__ == '__main__':
         
         # Store the run ID for potential evaluation later
         current_run_id = mlflow.active_run().info.run_id
+        
+        # Clean up run-specific temp directory
+        temp_dir = os.path.join("C:/temp/artifacts", f"run_{current_run_id}")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            print(f"Cleaned up temporary directory: {temp_dir}")
         
         # Clean up model from memory
         del model

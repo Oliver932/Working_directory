@@ -22,18 +22,28 @@ MLFLOW_URI = "file:///C:/temp/mlruns"
 
 def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
     """
-    Evaluate the model using SHAP and log feature importance plots to MLflow for each output dimension.
-    Collects background and evaluation datasets, computes SHAP values, and logs grouped bar plots.
+    Evaluate model using SHAP and generate feature importance heatmaps for each action dimension.
+    
+    Args:
+        run_id: MLflow run ID for logging artifacts
+        model: Trained PPO model
+        eval_env: Evaluation environment
+        n_background: Number of background samples for SHAP baseline
+        n_eval: Number of evaluation samples for SHAP explanations
+        MLFLOW_URI: MLflow tracking URI
+        TEMP_DIR: Base temporary directory
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
-    # Ensure temp directory exists before saving files
-    os.makedirs(TEMP_DIR, exist_ok=True)
+    # Use run-specific temp directory to avoid conflicts
+    temp_dir = os.path.join(TEMP_DIR, f"run_{run_id}")
+    os.makedirs(temp_dir, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         # Use all keys from the observation space, in order
         obs_keys = list(eval_env.observation_space.spaces.keys())
 
-        # 1. Collect background dataset (observations from random rollouts)
+        print(f"Collecting background dataset ({n_background} samples)...")
+        # Collect background dataset (observations from random rollouts)
         obs_list = []
         obs_dict_list = []  # Store unflattened dict observations for SHAP
         for _ in range(n_background):
@@ -59,21 +69,19 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
         background = np.stack(obs_list[:n_background])
         background_dict = obs_dict_list[:n_background]
 
-        # --- Save both background datasets as artifacts ---
-        # Save flattened version (for compatibility)
-        background_path = os.path.join(TEMP_DIR, "shap_background.npy")
+        # Save background datasets as MLflow artifacts
+        background_path = os.path.join(temp_dir, "shap_background.npy")
         np.save(background_path, background)
         mlflow.log_artifact(background_path, artifact_path="shap")
         os.unlink(background_path)
         
-        # Save dict version (for easier SHAP usage)
-        background_dict_path = os.path.join(TEMP_DIR, "shap_background_dict.npy")
+        background_dict_path = os.path.join(temp_dir, "shap_background_dict.npy")
         np.save(background_dict_path, background_dict, allow_pickle=True)
         mlflow.log_artifact(background_dict_path, artifact_path="shap")
         os.unlink(background_dict_path)
-        print(f"Saved both flattened ({background.shape}) and dict format background datasets.")
+        print(f"Saved background datasets (flattened: {background.shape}, dict format)")
 
-        # 2. Collect evaluation dataset (for SHAP explanation)
+        print(f"Collecting evaluation dataset ({n_eval} samples)...")
         eval_obs_list = []
         for _ in range(n_eval):
             obs = eval_env.reset()
@@ -110,13 +118,13 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
             actions, _ = model.predict(obs_batch, deterministic=True)
             return actions
 
-        # 4. Run SHAP KernelExplainer
+        print("Computing SHAP values...")
+        # Run SHAP KernelExplainer
         explainer = shap.KernelExplainer(model_predict, background)
         shap_values = explainer.shap_values(eval_data)
 
-        # 5. Generate and save 5 SHAP heatmaps (one per action/output), laid out as in RL_operation.py
-        temp_dir = TEMP_DIR
-        os.makedirs(temp_dir, exist_ok=True)
+        print("Generating SHAP feature importance heatmaps...")
+        # Generate and save SHAP heatmaps (one per action/output)
 
         # Prepare feature names and heatmap layout info
         obs_heatmap_xlabels = []  # column labels (keys)
@@ -179,19 +187,29 @@ def evaluate_with_SHAP(run_id, model, eval_env, n_background=100, n_eval=200, ML
         plt.close(fig)
         os.unlink(shap_heatmap_path)
 
-    print("--- SHAP action heatmaps (per output) saved and logged to MLflow ---")
+    print("SHAP analysis completed and logged to MLflow")
 
 def record_final_performance(run_id, model, eval_env, n_episodes=5, prefix="final", MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
     """
-    Run the trained model in the evaluation environment, record videos, and log them to MLflow.
+    Record evaluation videos of the trained model and log them to MLflow.
+    
+    Args:
+        run_id: MLflow run ID for logging artifacts
+        model: Trained PPO model
+        eval_env: Evaluation environment
+        n_episodes: Number of episodes to record
+        prefix: Prefix for video filenames
+        MLFLOW_URI: MLflow tracking URI
+        TEMP_DIR: Base temporary directory
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
-    # Ensure temp directory exists before saving files
-    os.makedirs(TEMP_DIR, exist_ok=True)
+    # Use run-specific temp directory to avoid conflicts
+    temp_dir = os.path.join(TEMP_DIR, f"run_{run_id}")
+    os.makedirs(temp_dir, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         overview_frames, robot_perspective_frames = [], []
-        print(f"--- Recording {prefix} performance with {n_episodes} episodes ---")
+        print(f"Recording {prefix} performance videos ({n_episodes} episodes)...")
 
         for _ in range(n_episodes):
             obs = eval_env.reset()
@@ -202,19 +220,16 @@ def record_final_performance(run_id, model, eval_env, n_episodes=5, prefix="fina
                 action, _ = model.predict(obs, deterministic=True)
                 obs, _, done, _ = eval_env.step(action)
 
-        # Use temporary files
-        temp_dir = TEMP_DIR
-        os.makedirs(temp_dir, exist_ok=True)
-
+        # Save videos to temporary files
         overview_vid_path = os.path.join(temp_dir, f"{prefix}_replay_overview.mp4")
         robot_vid_path = os.path.join(temp_dir, f"{prefix}_replay_robot.mp4")
 
-        print(f"--- Saving overview video to {overview_vid_path} ---")
+        print(f"Saving overview video...")
         imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
-        print(f"--- Saving robot perspective video to {robot_vid_path} ---")
+        print(f"Saving robot perspective video...")
         imageio.mimwrite(robot_vid_path, [np.array(frame) for frame in robot_perspective_frames], fps=30, format='FFMPEG')
 
-        # Log the final videos as artifacts to the active MLflow run
+        # Log videos as MLflow artifacts
         mlflow.log_artifact(overview_vid_path, artifact_path="replays")
         mlflow.log_artifact(robot_vid_path, artifact_path="replays")
 
@@ -222,16 +237,24 @@ def record_final_performance(run_id, model, eval_env, n_episodes=5, prefix="fina
         os.unlink(overview_vid_path)
         os.unlink(robot_vid_path)
 
-    print(f"--- {prefix} performance videos logged to MLflow ---")
+    print(f"Performance videos logged to MLflow successfully")
 
 def plot_and_save_stats(run_id, vecnorm, name_prefix, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
     """
     Generate and save VecNormalize statistics as a CSV file and log it to MLflow.
     Handles both dict and array observation spaces.
+    
+    Args:
+        run_id: MLflow run ID for logging artifacts
+        vecnorm: VecNormalize object containing statistics
+        name_prefix: Prefix for the output CSV filename
+        MLFLOW_URI: MLflow tracking URI
+        TEMP_DIR: Base temporary directory
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
-    # Ensure temp directory exists before saving files
-    os.makedirs(TEMP_DIR, exist_ok=True)
+    # Use run-specific temp directory to avoid conflicts
+    temp_dir = os.path.join(TEMP_DIR, f"run_{run_id}")
+    os.makedirs(temp_dir, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         obs_rms = vecnorm.obs_rms
@@ -244,20 +267,20 @@ def plot_and_save_stats(run_id, vecnorm, name_prefix, MLFLOW_URI=MLFLOW_URI, TEM
             # Fallback: if it's not a dict obs space, use a generic key
             norm_obs_keys = ['obs']
         
-        print(f"--- Detected normalized observation keys for stats: {norm_obs_keys} ---")
+        print(f"Generating VecNormalize statistics for: {name_prefix}")
         
-        # For Dict obs space with norm_obs_keys, obs_rms is a dict of RunningMeanStd objects
+        # Process observation statistics based on observation space type
         if isinstance(obs_rms, dict):
             keys = [k for k in obs_rms.keys() if k in norm_obs_keys]
             if not keys:
-                print(f"Warning: No normalized observation keys found in obs_rms for {name_prefix}. Skipping summary table.")
+                print(f"Warning: No normalized observation keys found for {name_prefix}. Skipping summary table.")
                 return
             for key in keys:
                 rms = obs_rms[key]
                 mean_vals = getattr(rms, 'mean', None)
                 var_vals = getattr(rms, 'var', None)
                 if mean_vals is None or var_vals is None:
-                    print(f"Warning: Missing mean/var for key '{key}' in obs_rms. Skipping.")
+                    print(f"Warning: Missing mean/var for key '{key}'. Skipping.")
                     continue
                 std_vals = np.sqrt(var_vals)
                 for idx in range(len(mean_vals)):
@@ -287,7 +310,7 @@ def plot_and_save_stats(run_id, vecnorm, name_prefix, MLFLOW_URI=MLFLOW_URI, TEM
                     'max': mean_vals[idx] + std_vals[idx]
                 })
 
-        # Reward stats
+        # Add reward statistics
         ret_mean = getattr(vecnorm.ret_rms, 'mean', None)
         ret_var = getattr(vecnorm.ret_rms, 'var', None)
         if ret_mean is not None and ret_var is not None:
@@ -301,19 +324,19 @@ def plot_and_save_stats(run_id, vecnorm, name_prefix, MLFLOW_URI=MLFLOW_URI, TEM
                 'max': ret_mean + ret_std
             })
         else:
-            print(f"Warning: ret_rms missing mean/var for {name_prefix}. Skipping reward stats in summary table.")
+            print(f"Warning: reward statistics missing for {name_prefix}.")
 
+        # Save and log statistics if data is available
         if summary_rows:
-            temp_dir = TEMP_DIR
-            os.makedirs(temp_dir, exist_ok=True)
-            
             df = pd.DataFrame(summary_rows)
             summary_path = os.path.join(temp_dir, f"{name_prefix}_vecnormalize_summary.csv")
             df.to_csv(summary_path, index=False)
             mlflow.log_artifact(summary_path, artifact_path="vecnormalize_stats")
             os.unlink(summary_path)
+            print(f"VecNormalize statistics saved to MLflow successfully")
+        else:
+            print(f"No statistics data found for {name_prefix}")
     
-    print(f"--- {name_prefix} VecNormalize stats saved to MLflow ---")
 
 # VERY USEFUL FUNCTION FOR LOADING ANY MODEL AND ENVIRONMENTS FROM MLFLOW
  
@@ -326,43 +349,86 @@ def load_trained_model_and_envs(run_id, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR
     
     # Set MLflow tracking URI and start run context
     mlflow.set_tracking_uri(MLFLOW_URI)
+
+    # Verify run exists and display basic information
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(run_id)
+    run_name = run.data.tags.get('mlflow.runName', 'unknown_run')
+    print(f"Loading artifacts for run: {run_name} (ID: {run_id})")
     
     with mlflow.start_run(run_id=run_id):
-        # Setup temporary directory
-        temp_dir = TEMP_DIR
+        # Create run-specific temporary directory to avoid conflicts between different runs
+        temp_dir = os.path.join(TEMP_DIR, f"run_{run_id}")
+        if os.path.exists(temp_dir):
+            print(f"Cleaning existing temporary directory...")
+            shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Download all artifacts in one call
+        # Download all artifacts from MLflow to the run-specific directory
+        print("Downloading artifacts from MLflow...")
         artifact_dir = mlflow.artifacts.download_artifacts(run_id=run_id, dst_path=temp_dir)
         
-        # Load config
+        # Load configuration file
         config_files = glob.glob(os.path.join(artifact_dir, "config_*.json"))
         if not config_files:
             raise FileNotFoundError("No config_*.json file found in MLflow artifacts.")
         
+        print(f"Loading configuration from: {os.path.basename(config_files[0])}")
         with open(config_files[0], "r") as f:
             config = json.load(f)
         
-        # Find model and VecNormalize files in the model subdirectory
+        # Locate model directory and verify contents
         model_path = os.path.join(artifact_dir, "model")
         if not os.path.exists(model_path):
             raise FileNotFoundError("Model directory not found in MLflow artifacts")
         
-        # Find model and VecNormalize files
+        # Scan for model and VecNormalize files
+        model_files = []
+        vecnorm_files = []
+        
+        for file in os.listdir(model_path):
+            if file.endswith('.zip') and 'ppo_model' in file.lower():
+                model_files.append(file)
+            elif file.endswith('.pkl') and 'vecnormalize' in file.lower():
+                vecnorm_files.append(file)
+        
+        if not model_files or not vecnorm_files:
+            # If no files found, show what's available for debugging
+            print(f"Available files in model directory:")
+            for file in os.listdir(model_path):
+                file_path = os.path.join(model_path, file)
+                size = os.path.getsize(file_path) if os.path.isfile(file_path) else "directory"
+                print(f"  {file} ({size} bytes)")
+            raise FileNotFoundError(f"Could not find model or VecNormalize files. Found: {os.listdir(model_path)}")
+        
+        # Select files that match the run name, with fallback to first available
         model_file = None
         vecnorm_file = None
         
-        for file in os.listdir(model_path):
-            if file.endswith('.zip') and 'ppo_model' in file:
+        # Prefer files that contain the run name (handle spaces by converting to underscores)
+        run_name_normalized = run_name.replace(' ', '_')
+        
+        for file in model_files:
+            if run_name_normalized in file or run_name in file:
                 model_file = os.path.join(model_path, file)
-            elif file.endswith('.pkl') and 'vecnormalize' in file:
+                break
+        
+        if not model_file:
+            model_file = os.path.join(model_path, model_files[0])
+            print(f"Note: Using first available model file: {model_files[0]}")
+        
+        for file in vecnorm_files:
+            if run_name_normalized in file or run_name in file:
                 vecnorm_file = os.path.join(model_path, file)
+                break
         
-        if not model_file or not vecnorm_file:
-            raise FileNotFoundError("Could not find model or VecNormalize files in MLflow artifacts")
+        if not vecnorm_file:
+            vecnorm_file = os.path.join(model_path, vecnorm_files[0])
+            print(f"Note: Using first available VecNormalize file: {vecnorm_files[0]}")
         
-        print(f"--- Loading model from {model_file} ---")
-        print(f"--- Loading VecNormalize from {vecnorm_file} ---")
+        # Load model and VecNormalize wrapper
+        print(f"Loading PPO model: {os.path.basename(model_file)}")
+        print(f"Loading VecNormalize wrapper: {os.path.basename(vecnorm_file)}")
         
         # Create evaluation environment
         def make_eval_env():
@@ -374,39 +440,46 @@ def load_trained_model_and_envs(run_id, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR
 
         # Load VecNormalize wrapper and model
         eval_env = VecNormalize.load(vecnorm_file, eval_env)
+
+        # CRITICAL: Set VecNormalize to evaluation mode to freeze statistics
+        eval_env.training = False
+        eval_env.norm_obs = True  # Keep observation normalization active
+        eval_env.norm_reward = False  # Disable reward normalization during evaluation
+        
+        print("--- VecNormalize set to evaluation mode (statistics frozen) ---")
+
         model = PPO.load(model_file)
+        print(f"--- Model loaded successfully from {os.path.basename(model_file)} ---")
 
-        # --- NEW: Pull last difficulty from MLflow metrics and set it ---
-        client = mlflow.tracking.MlflowClient()
-        metric_history = client.get_metric_history(run_id, "tb_curriculum_current_difficulty")
-        if metric_history:
-            last_difficulty = metric_history[-1].value
-            print(f"--- Last trained difficulty from MLflow: {last_difficulty} ---")
-
-            try:
+        # Retrieve and set the last training difficulty from MLflow metrics
+        try:
+            metric_history = client.get_metric_history(run_id, "tb_curriculum_current_difficulty")
+            if metric_history:
+                last_difficulty = metric_history[-1].value
                 eval_env.envs[0].unwrapped.set_difficulty(last_difficulty)
-                print(f"Set evaluation environment difficulty to last trained value: {last_difficulty}")
-
-            except Exception as e:
-                print(f"Failed to set difficulty from MLflow metric: {e}")
-        else:
-
-            try:
-                user_input = input("Last trained difficulty is unknown. Enter a new difficulty value: ").strip()
+                print(f"Set evaluation environment difficulty to last training value: {last_difficulty:.3f}")
+            else:
+                # Fallback: prompt user for difficulty if not found in metrics
+                user_input = input("Training difficulty not found in metrics. Enter difficulty value (0.0-1.0): ").strip()
                 new_difficulty = float(user_input)
                 eval_env.envs[0].unwrapped.set_difficulty(new_difficulty)
-                print(f"Set evaluation environment difficulty to user input value: {new_difficulty}")
+                print(f"Set evaluation environment difficulty to user input: {new_difficulty:.3f}")
+        except Exception as e:
+            print(f"Warning: Could not set evaluation difficulty: {e}")
 
-            except Exception as e:
-                print(f"Failed to set difficulty from user input: {e}")
-
-
-        # Clean up downloaded artifacts
+        # Clean up temporary files
         shutil.rmtree(artifact_dir)
+        if os.path.exists(temp_dir):
+            try:
+                import time
+                time.sleep(0.1)  # Brief delay to ensure file handles are released
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                print(f"Note: Could not clean up temporary directory: {e}")
 
     return config, model, eval_env
 
-def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000, 
+def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=500, 
                                MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
     """
     Evaluate the model across varying difficulty levels using random curriculum difficulties and create 
@@ -423,7 +496,9 @@ def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000
         TEMP_DIR: Temporary directory for saving artifacts
     """
     mlflow.set_tracking_uri(MLFLOW_URI)
-    os.makedirs(TEMP_DIR, exist_ok=True)
+    # Use run-specific temp directory to avoid conflicts
+    temp_dir = os.path.join(TEMP_DIR, f"run_{run_id}")
+    os.makedirs(temp_dir, exist_ok=True)
     
     with mlflow.start_run(run_id=run_id):
         # Extract difficulty limits from config
@@ -438,6 +513,8 @@ def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000
         episode_lengths = []
         curriculum_difficulties = []
         actual_difficulties = []
+        collision_results = []
+        truncated_results = []
         
         for episode in range(n_episodes):
             # Sample a random curriculum difficulty
@@ -460,9 +537,14 @@ def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000
             # Extract episode info
             ep_info = info[0] if info and len(info) > 0 else {}
             is_success = ep_info.get("is_success", False)
+            is_collision = ep_info.get("is_collision", False)
+            # Check if episode was truncated (hit max steps)
+            is_truncated = ep_info.get("is_truncated", False)
             actual_difficulty = ep_info.get("difficulty", curriculum_difficulty)  # Fall back to curriculum difficulty if not available
             
             episode_results.append(is_success)
+            collision_results.append(is_collision)
+            truncated_results.append(is_truncated)
             episode_lengths.append(step_count)
             actual_difficulties.append(actual_difficulty)
             
@@ -471,104 +553,103 @@ def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000
         
         # Convert to numpy arrays for easier manipulation
         episode_results = np.array(episode_results)
+        collision_results = np.array(collision_results)
+        truncated_results = np.array(truncated_results)
         episode_lengths = np.array(episode_lengths)
         actual_difficulties = np.array(actual_difficulties)
         curriculum_difficulties = np.array(curriculum_difficulties)
         
-        # Create histogram plots
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-        
+        # Create histogram plots (only 2 plots now)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
         # Define difficulty bins for histograms
         n_bins = 15
         difficulty_bins = np.linspace(min(actual_difficulties), max(actual_difficulties), n_bins)
-        
+
         # Plot 1: Histogram of actual difficulties
         ax1.hist(actual_difficulties, bins=difficulty_bins, alpha=0.7, color='blue', edgecolor='black')
         ax1.set_xlabel('Actual Difficulty Level')
         ax1.set_ylabel('Number of Episodes')
         ax1.set_title('Distribution of Actual Difficulty Levels')
         ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Success rate by difficulty bins
+
+        # Plot 2: Stacked bar chart showing success, collision, truncated, and other termination proportions by difficulty bins
         success_rates_binned = []
+        collision_rates_binned = []
+        truncated_rates_binned = []
+        other_rates_binned = []
         difficulty_bin_centers = []
+
         for i in range(len(difficulty_bins) - 1):
             mask = (actual_difficulties >= difficulty_bins[i]) & (actual_difficulties < difficulty_bins[i + 1])
             if np.any(mask):
-                success_rate = np.mean(episode_results[mask])
+                total_episodes_in_bin = np.sum(mask)
+                success_rate = np.sum(episode_results[mask]) / total_episodes_in_bin
+                collision_rate = np.sum(collision_results[mask]) / total_episodes_in_bin
+                truncated_rate = np.sum(truncated_results[mask]) / total_episodes_in_bin
+                # Compute 'other termination' as those not success, collision, or truncated
+                other_mask = ~(
+                    episode_results[mask] |
+                    collision_results[mask] |
+                    truncated_results[mask]
+                )
+                other_rate = np.sum(other_mask) / total_episodes_in_bin
+
                 success_rates_binned.append(success_rate)
+                collision_rates_binned.append(collision_rate)
+                truncated_rates_binned.append(truncated_rate)
+                other_rates_binned.append(other_rate)
                 difficulty_bin_centers.append((difficulty_bins[i] + difficulty_bins[i + 1]) / 2)
-        
-        ax2.bar(difficulty_bin_centers, success_rates_binned, width=np.diff(difficulty_bins)[0] * 0.8, 
-                alpha=0.7, color='green', edgecolor='black')
+
+        # Create stacked bar chart
+        width = np.diff(difficulty_bins)[0] * 0.8
+        ax2.bar(difficulty_bin_centers, success_rates_binned, width=width,
+            alpha=0.8, color='green', edgecolor='black', label='Success')
+        ax2.bar(difficulty_bin_centers, collision_rates_binned, width=width,
+            bottom=success_rates_binned, alpha=0.8, color='red', edgecolor='black', label='Collision')
+
+        # Calculate bottom for truncated bars (success + collision)
+        bottom_truncated = np.array(success_rates_binned) + np.array(collision_rates_binned)
+        ax2.bar(difficulty_bin_centers, truncated_rates_binned, width=width,
+            bottom=bottom_truncated, alpha=0.8, color='orange', edgecolor='black', label='Truncated')
+
+        # Calculate bottom for other termination bars (success + collision + truncated)
+        bottom_other = bottom_truncated + np.array(truncated_rates_binned)
+        ax2.bar(difficulty_bin_centers, other_rates_binned, width=width,
+            bottom=bottom_other, alpha=0.8, color='gray', edgecolor='black', label='Other Termination')
+
         ax2.set_xlabel('Actual Difficulty Level')
-        ax2.set_ylabel('Success Rate')
-        ax2.set_title('Success Rate vs Actual Difficulty (Binned)')
+        ax2.set_ylabel('Proportion of Episodes')
+        ax2.set_title('Episode Outcomes vs Actual Difficulty (Stacked)')
+        ax2.legend()
         ax2.grid(True, alpha=0.3)
         ax2.set_ylim(0, 1.1)
-        
-        # Plot 3: Episode length histogram colored by success
-        successful_episodes = episode_lengths[episode_results == True]
-        failed_episodes = episode_lengths[episode_results == False]
-        
-        ax3.hist([successful_episodes, failed_episodes], bins=20, alpha=0.7, 
-                label=['Successful', 'Failed'], color=['green', 'red'], edgecolor='black')
-        ax3.set_xlabel('Episode Length (steps)')
-        ax3.set_ylabel('Number of Episodes')
-        ax3.set_title('Episode Length Distribution by Outcome')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot 4: Mean episode length by difficulty bins
-        mean_lengths_binned = []
-        std_lengths_binned = []
-        for i in range(len(difficulty_bins) - 1):
-            mask = (actual_difficulties >= difficulty_bins[i]) & (actual_difficulties < difficulty_bins[i + 1])
-            if np.any(mask):
-                mean_length = np.mean(episode_lengths[mask])
-                std_length = np.std(episode_lengths[mask])
-                mean_lengths_binned.append(mean_length)
-                std_lengths_binned.append(std_length)
-            else:
-                mean_lengths_binned.append(0)
-                std_lengths_binned.append(0)
-        
-        # Only plot bins that have data
-        valid_bins = np.array(mean_lengths_binned) > 0
-        valid_centers = np.array(difficulty_bin_centers)[valid_bins[:len(difficulty_bin_centers)]]
-        valid_means = np.array(mean_lengths_binned)[valid_bins[:len(mean_lengths_binned)]]
-        valid_stds = np.array(std_lengths_binned)[valid_bins[:len(std_lengths_binned)]]
-        
-        ax4.bar(valid_centers, valid_means, yerr=valid_stds, width=np.diff(difficulty_bins)[0] * 0.8,
-                alpha=0.7, color='blue', edgecolor='black', capsize=5)
-        ax4.set_xlabel('Actual Difficulty Level')
-        ax4.set_ylabel('Mean Episode Length (steps)')
-        ax4.set_title('Mean Episode Length vs Actual Difficulty (Binned)')
-        ax4.grid(True, alpha=0.3)
-        
+
         plt.tight_layout()
-        
+
         # Save the plot as an artifact
-        plot_path = os.path.join(TEMP_DIR, "difficulty_evaluation_histograms.png")
+        plot_path = os.path.join(temp_dir, "difficulty_evaluation_histograms.png")
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         mlflow.log_artifact(plot_path, artifact_path="evaluation")
         plt.close(fig)
         os.unlink(plot_path)
-        
+
         # Also log the raw data as a CSV
         results_df = pd.DataFrame({
-            'episode': range(n_episodes),
-            'curriculum_difficulty': curriculum_difficulties,
-            'actual_difficulty': actual_difficulties,
-            'is_success': episode_results,
-            'episode_length': episode_lengths
+        'episode': range(n_episodes),
+        'curriculum_difficulty': curriculum_difficulties,
+        'actual_difficulty': actual_difficulties,
+        'is_success': episode_results,
+        'is_collision': collision_results,
+        'is_truncated': truncated_results,
+        'episode_length': episode_lengths
         })
-        
-        csv_path = os.path.join(TEMP_DIR, "difficulty_evaluation_data.csv")
+
+        csv_path = os.path.join(temp_dir, "difficulty_evaluation_data.csv")
         results_df.to_csv(csv_path, index=False)
         mlflow.log_artifact(csv_path, artifact_path="evaluation")
         os.unlink(csv_path)
-        
+            
         # Log summary metrics
         overall_success_rate = np.mean(episode_results)
         mean_episode_length = np.mean(episode_lengths)
@@ -580,15 +661,16 @@ def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000
         mlflow.log_metric("eval_min_episode_length", min(episode_lengths))
         mlflow.log_metric("eval_max_episode_length", max(episode_lengths))
         mlflow.log_metric("eval_n_episodes", n_episodes)
-        
-        print(f"--- Difficulty evaluation completed and saved to MLflow ---")
-        print(f"Overall success rate: {overall_success_rate:.3f}")
-        print(f"Episode length: {mean_episode_length:.1f}±{std_episode_length:.1f} (range: {min(episode_lengths)}-{max(episode_lengths)})")
-        print(f"Actual difficulty range: {min(actual_difficulties):.3f} - {max(actual_difficulties):.3f}")
-        print(f"Curriculum difficulty range: {min(curriculum_difficulties):.3f} - {max(curriculum_difficulties):.3f}")
+    
+    print(f"--- Difficulty evaluation completed and saved to MLflow ---")
+    print(f"Overall success rate: {overall_success_rate:.3f}")
+    print(f"Episode length: {mean_episode_length:.1f}±{std_episode_length:.1f} (range: {min(episode_lengths)}-{max(episode_lengths)})")
+    print(f"Actual difficulty range: {min(actual_difficulties):.3f} - {max(actual_difficulties):.3f}")
+    print(f"Curriculum difficulty range: {min(curriculum_difficulties):.3f} - {max(curriculum_difficulties):.3f}")
 
 if __name__ == '__main__':
-    print("--- RL Evaluation Script ---")
+    print("RL Evaluation Script")
+    print("=" * 50)
     
     # Get run ID from user
     run_id_input = input("Enter the MLflow Run ID to evaluate: ").strip()
@@ -596,58 +678,63 @@ if __name__ == '__main__':
         print("No Run ID provided. Exiting.")
         exit(1)
     
-    # Get evaluation options
-    render_video = input("Render final performance video? (y/n): ").lower() == 'y'
+    # Get evaluation options from user
+    print("\nEvaluation Options:")
+    render_video = input("Record performance video? (y/n): ").lower() == 'y'
     save_statistics = input("Save VecNormalize statistics? (y/n): ").lower() == 'y'
     run_shap = input("Run SHAP evaluation? (y/n): ").lower() == 'y'
     run_difficulty_eval = input("Run difficulty evaluation? (y/n): ").lower() == 'y'
     
+    # Optional difficulty override
     difficulty_val = None
-    set_difficulty = input("Set evaluation environment difficulty? (leave blank for last training value): ").strip()
+    set_difficulty = input("Override evaluation difficulty? (leave blank for training value): ").strip()
     if set_difficulty:
         try:
             difficulty_val = float(set_difficulty)
         except ValueError:
-            print("Invalid difficulty value. Using default.")
+            print("Invalid difficulty value. Using training default.")
             difficulty_val = None
     
-    # Get run name for display
+    # Get run information and start evaluation
     mlflow.set_tracking_uri(MLFLOW_URI)
     run = mlflow.get_run(run_id_input)
     run_name = run.data.tags.get('mlflow.runName', 'unknown_run')
-    print(f"--- Starting evaluation for run: {run_name} (ID: {run_id_input}) ---")
+    print(f"\nStarting evaluation for run: {run_name} (ID: {run_id_input})")
     
-    # Load model and environments
+    # Load model and environment from MLflow artifacts
     config, model, eval_env = load_trained_model_and_envs(run_id_input)
     
-    # Set difficulty if requested
+    # Override difficulty if requested
     if difficulty_val is not None:
         try:
             eval_env.envs[0].unwrapped.set_difficulty(difficulty_val)
-            print(f"Set evaluation environment difficulty to {difficulty_val}")
+            print(f"Overrode evaluation difficulty to: {difficulty_val:.3f}")
         except Exception as e:
-            print(f"Failed to set difficulty: {e}")
+            print(f"Failed to override difficulty: {e}")
     
-    # Run evaluations
+    # Execute selected evaluation tasks
+    print("\nRunning evaluations...")
+    
     if render_video:
-        print("--- Recording final performance of the trained agent ---")
+        print("Recording performance videos...")
         record_final_performance(run_id_input, model, eval_env)
     
     if save_statistics:
-        print("--- Generating and saving VecNormalize statistics ---")
+        print("Generating VecNormalize statistics...")
         plot_and_save_stats(run_id_input, eval_env, "eval_env")
     
     if run_shap:
-        print("--- Running SHAP evaluation ---")
+        print("Running SHAP feature importance analysis...")
         evaluate_with_SHAP(run_id_input, model, eval_env)
     
     if run_difficulty_eval:
-        print("--- Running difficulty evaluation ---")
+        print("Running difficulty evaluation...")
         evaluate_varying_difficulty(run_id_input, model, eval_env, config)
     
-    # Clean up
+    # Cleanup and completion message
     del model
     eval_env.close()
     
-    print(f"--- Evaluation completed for run: {run_name} ---")
-    print(f"To view results, run 'mlflow ui --backend-store-uri {MLFLOW_URI}' in your terminal.")
+    print(f"\nEvaluation completed for run: {run_name}")
+    print(f"View results: mlflow ui --backend-store-uri {MLFLOW_URI}")
+    print("=" * 50)
