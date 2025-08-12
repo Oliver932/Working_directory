@@ -225,6 +225,34 @@ class CustomRobotEnv(gym.Env):
         camera_settings = self.config["camera"]
         overview_camera_settings = self.config["overview_camera"]
 
+        # # --- Define Observation and Action Spaces ---
+        # self.observation_space = spaces.Dict({
+        #     # Ellipse position relative to G1 position
+        #     "ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
+        #     "delta_ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
+
+        #     # Ellipse shape and orientation (new simplified format)
+        #     "ellipse_major_axis_norm": spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32),
+        #     "delta_ellipse_major_axis_norm": spaces.Box(low=-2.0, high=2.0, shape=(1,), dtype=np.float32),
+        #     "ellipse_aspect_ratio": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+        #     "delta_ellipse_aspect_ratio": spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32),
+        #     "ellipse_orientation_2d": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+        #     "delta_ellipse_orientation_2d": spaces.Box(low=-2.0, high=2.0, shape=(2,), dtype=np.float32),
+
+        #     "ellipse_visible": spaces.MultiBinary(1),
+
+        #     "actuator_extensions": spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32),
+        #     "delta_extensions": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
+
+        #     "E1_position": spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
+        #     "delta_E1": spaces.Box(low=-np.pi, high=np.pi, shape=(3,), dtype=np.float32),
+        #     "E1_quaternion": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
+        #     "delta_E1_quaternion": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
+
+        #     "last_move_successful": spaces.MultiBinary(1),
+
+        # })
+
         # --- Define Observation and Action Spaces ---
         self.observation_space = spaces.Dict({
             # Ellipse position relative to G1 position
@@ -239,19 +267,11 @@ class CustomRobotEnv(gym.Env):
             "ellipse_orientation_2d": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
             "delta_ellipse_orientation_2d": spaces.Box(low=-2.0, high=2.0, shape=(2,), dtype=np.float32),
 
-            "ellipse_visible": spaces.MultiBinary(1),
-
             "actuator_extensions": spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32),
             "delta_extensions": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
 
-            "E1_position": spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
-            "delta_E1": spaces.Box(low=-np.pi, high=np.pi, shape=(3,), dtype=np.float32),
-            "E1_quaternion": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
-            "delta_E1_quaternion": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
-
-            "last_move_successful": spaces.MultiBinary(1),
-
         })
+
 
         self.action_space = spaces.Box(low=-1, high=1, shape=(5,), dtype=np.float32)
 
@@ -314,6 +334,30 @@ class CustomRobotEnv(gym.Env):
 
         # Calculate relative positions (ellipse relative to G1)
 
+        # observations = {
+        #     # Ellipse position relative to G1
+        #     "ellipse_position_relative": ellipse_details['position_2d'] - ellipse_details['g1_position_2d'],
+        #     "delta_ellipse_position_relative": ellipse_details['delta_position_2d'] - ellipse_details['delta_g1_position_2d'],
+            
+        #     # Ellipse shape and orientation (new simplified format)
+        #     "ellipse_major_axis_norm": np.array([ellipse_details['major_axis_norm']], dtype=np.float32),
+        #     "delta_ellipse_major_axis_norm": np.array([ellipse_details['delta_major_axis_norm']], dtype=np.float32),
+        #     "ellipse_aspect_ratio": np.array([ellipse_details['aspect_ratio']], dtype=np.float32),
+        #     "delta_ellipse_aspect_ratio": np.array([ellipse_details['delta_aspect_ratio']], dtype=np.float32),
+        #     "ellipse_orientation_2d": ellipse_details['orientation_2d'],
+        #     "delta_ellipse_orientation_2d": ellipse_details['delta_orientation_2d'],
+            
+        #     "ellipse_visible": np.array([1] if ellipse_details.get('visible', False) else [0], dtype=np.int8),
+
+        #     "actuator_extensions": self.robot.extensions,
+        #     "delta_extensions": self.robot.delta_extensions,
+        #     "E1_position": self.robot.E1,
+        #     "delta_E1": self.robot.delta_E1,
+        #     "E1_quaternion": self.robot.E1_quaternion,
+        #     "delta_E1_quaternion": self.robot.delta_E1_quaternion,
+        #     "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
+        # }
+
         observations = {
             # Ellipse position relative to G1
             "ellipse_position_relative": ellipse_details['position_2d'] - ellipse_details['g1_position_2d'],
@@ -326,16 +370,9 @@ class CustomRobotEnv(gym.Env):
             "delta_ellipse_aspect_ratio": np.array([ellipse_details['delta_aspect_ratio']], dtype=np.float32),
             "ellipse_orientation_2d": ellipse_details['orientation_2d'],
             "delta_ellipse_orientation_2d": ellipse_details['delta_orientation_2d'],
-            
-            "ellipse_visible": np.array([1] if ellipse_details.get('visible', False) else [0], dtype=np.int8),
 
             "actuator_extensions": self.robot.extensions,
             "delta_extensions": self.robot.delta_extensions,
-            "E1_position": self.robot.E1,
-            "delta_E1": self.robot.delta_E1,
-            "E1_quaternion": self.robot.E1_quaternion,
-            "delta_E1_quaternion": self.robot.delta_E1_quaternion,
-            "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
         }
 
         return observations
@@ -595,13 +632,21 @@ if __name__ == '__main__':
         train_env = DummyVecEnv([make_env])
         
         # Specify which observation keys to normalize (only Box spaces, not MultiBinary)
+        # norm_obs_keys = [
+        #     "ellipse_position_relative", "delta_ellipse_position_relative",
+        #     "ellipse_major_axis_norm", "delta_ellipse_major_axis_norm",
+        #     "ellipse_aspect_ratio", "delta_ellipse_aspect_ratio",
+        #     "ellipse_orientation_2d", "delta_ellipse_orientation_2d",
+        #     "actuator_extensions", "delta_extensions",
+        #     "E1_position", "delta_E1", "E1_quaternion", "delta_E1_quaternion"
+        # ]
+
         norm_obs_keys = [
             "ellipse_position_relative", "delta_ellipse_position_relative",
             "ellipse_major_axis_norm", "delta_ellipse_major_axis_norm",
             "ellipse_aspect_ratio", "delta_ellipse_aspect_ratio",
             "ellipse_orientation_2d", "delta_ellipse_orientation_2d",
             "actuator_extensions", "delta_extensions",
-            "E1_position", "delta_E1", "E1_quaternion", "delta_E1_quaternion"
         ]
         train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., norm_obs_keys=norm_obs_keys)
 

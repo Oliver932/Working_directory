@@ -316,6 +316,8 @@ def plot_and_save_stats(run_id, vecnorm, name_prefix, MLFLOW_URI=MLFLOW_URI, TEM
     print(f"--- {name_prefix} VecNormalize stats saved to MLflow ---")
 
 # VERY USEFUL FUNCTION FOR LOADING ANY MODEL AND ENVIRONMENTS FROM MLFLOW
+ 
+
 def load_trained_model_and_envs(run_id, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
     """
     Load a trained model, config, and VecNormalize wrapper from MLflow artifacts and create evaluation environments.
@@ -404,6 +406,187 @@ def load_trained_model_and_envs(run_id, MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR
 
     return config, model, eval_env
 
+def evaluate_varying_difficulty(run_id, model, eval_env, config, n_episodes=1000, 
+                               MLFLOW_URI=MLFLOW_URI, TEMP_DIR=TEMP_DIR):
+    """
+    Evaluate the model across varying difficulty levels using random curriculum difficulties and create 
+    histograms of success rate and episode length against the actual difficulty (as returned by the environment).
+    Saves the plots as MLflow artifacts.
+    
+    Args:
+        run_id: MLflow run ID
+        model: Trained PPO model
+        eval_env: Evaluation environment (VecEnv)
+        config: Configuration dictionary containing curriculum trainer settings
+        n_episodes: Total number of episodes to run at random difficulties
+        MLFLOW_URI: MLflow tracking URI
+        TEMP_DIR: Temporary directory for saving artifacts
+    """
+    mlflow.set_tracking_uri(MLFLOW_URI)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    
+    with mlflow.start_run(run_id=run_id):
+        # Extract difficulty limits from config
+        curriculum_config = config.get("callbacks", {}).get("curriculum_trainer", {})
+        min_difficulty = curriculum_config.get("min_difficulty", 0.0)
+        max_difficulty = curriculum_config.get("max_difficulty", 1.0)
+        
+        print(f"--- Evaluating across difficulty range: {min_difficulty} to {max_difficulty} with {n_episodes} episodes ---")
+        
+        # Run episodes at random curriculum difficulties
+        episode_results = []
+        episode_lengths = []
+        curriculum_difficulties = []
+        actual_difficulties = []
+        
+        for episode in range(n_episodes):
+            # Sample a random curriculum difficulty
+            curriculum_difficulty = np.random.uniform(min_difficulty, max_difficulty)
+            curriculum_difficulties.append(curriculum_difficulty)
+            
+            # Set the difficulty for this evaluation
+            eval_env.envs[0].unwrapped.set_difficulty(curriculum_difficulty)
+            
+            # Run single episode
+            obs = eval_env.reset()
+            done = [False]
+            step_count = 0
+            
+            while not done[0]:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, _, done, info = eval_env.step(action)
+                step_count += 1
+            
+            # Extract episode info
+            ep_info = info[0] if info and len(info) > 0 else {}
+            is_success = ep_info.get("is_success", False)
+            actual_difficulty = ep_info.get("difficulty", curriculum_difficulty)  # Fall back to curriculum difficulty if not available
+            
+            episode_results.append(is_success)
+            episode_lengths.append(step_count)
+            actual_difficulties.append(actual_difficulty)
+            
+            if (episode + 1) % 50 == 0:
+                print(f"  Completed {episode + 1}/{n_episodes} episodes")
+        
+        # Convert to numpy arrays for easier manipulation
+        episode_results = np.array(episode_results)
+        episode_lengths = np.array(episode_lengths)
+        actual_difficulties = np.array(actual_difficulties)
+        curriculum_difficulties = np.array(curriculum_difficulties)
+        
+        # Create histogram plots
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Define difficulty bins for histograms
+        n_bins = 15
+        difficulty_bins = np.linspace(min(actual_difficulties), max(actual_difficulties), n_bins)
+        
+        # Plot 1: Histogram of actual difficulties
+        ax1.hist(actual_difficulties, bins=difficulty_bins, alpha=0.7, color='blue', edgecolor='black')
+        ax1.set_xlabel('Actual Difficulty Level')
+        ax1.set_ylabel('Number of Episodes')
+        ax1.set_title('Distribution of Actual Difficulty Levels')
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Success rate by difficulty bins
+        success_rates_binned = []
+        difficulty_bin_centers = []
+        for i in range(len(difficulty_bins) - 1):
+            mask = (actual_difficulties >= difficulty_bins[i]) & (actual_difficulties < difficulty_bins[i + 1])
+            if np.any(mask):
+                success_rate = np.mean(episode_results[mask])
+                success_rates_binned.append(success_rate)
+                difficulty_bin_centers.append((difficulty_bins[i] + difficulty_bins[i + 1]) / 2)
+        
+        ax2.bar(difficulty_bin_centers, success_rates_binned, width=np.diff(difficulty_bins)[0] * 0.8, 
+                alpha=0.7, color='green', edgecolor='black')
+        ax2.set_xlabel('Actual Difficulty Level')
+        ax2.set_ylabel('Success Rate')
+        ax2.set_title('Success Rate vs Actual Difficulty (Binned)')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(0, 1.1)
+        
+        # Plot 3: Episode length histogram colored by success
+        successful_episodes = episode_lengths[episode_results == True]
+        failed_episodes = episode_lengths[episode_results == False]
+        
+        ax3.hist([successful_episodes, failed_episodes], bins=20, alpha=0.7, 
+                label=['Successful', 'Failed'], color=['green', 'red'], edgecolor='black')
+        ax3.set_xlabel('Episode Length (steps)')
+        ax3.set_ylabel('Number of Episodes')
+        ax3.set_title('Episode Length Distribution by Outcome')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Mean episode length by difficulty bins
+        mean_lengths_binned = []
+        std_lengths_binned = []
+        for i in range(len(difficulty_bins) - 1):
+            mask = (actual_difficulties >= difficulty_bins[i]) & (actual_difficulties < difficulty_bins[i + 1])
+            if np.any(mask):
+                mean_length = np.mean(episode_lengths[mask])
+                std_length = np.std(episode_lengths[mask])
+                mean_lengths_binned.append(mean_length)
+                std_lengths_binned.append(std_length)
+            else:
+                mean_lengths_binned.append(0)
+                std_lengths_binned.append(0)
+        
+        # Only plot bins that have data
+        valid_bins = np.array(mean_lengths_binned) > 0
+        valid_centers = np.array(difficulty_bin_centers)[valid_bins[:len(difficulty_bin_centers)]]
+        valid_means = np.array(mean_lengths_binned)[valid_bins[:len(mean_lengths_binned)]]
+        valid_stds = np.array(std_lengths_binned)[valid_bins[:len(std_lengths_binned)]]
+        
+        ax4.bar(valid_centers, valid_means, yerr=valid_stds, width=np.diff(difficulty_bins)[0] * 0.8,
+                alpha=0.7, color='blue', edgecolor='black', capsize=5)
+        ax4.set_xlabel('Actual Difficulty Level')
+        ax4.set_ylabel('Mean Episode Length (steps)')
+        ax4.set_title('Mean Episode Length vs Actual Difficulty (Binned)')
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save the plot as an artifact
+        plot_path = os.path.join(TEMP_DIR, "difficulty_evaluation_histograms.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        mlflow.log_artifact(plot_path, artifact_path="evaluation")
+        plt.close(fig)
+        os.unlink(plot_path)
+        
+        # Also log the raw data as a CSV
+        results_df = pd.DataFrame({
+            'episode': range(n_episodes),
+            'curriculum_difficulty': curriculum_difficulties,
+            'actual_difficulty': actual_difficulties,
+            'is_success': episode_results,
+            'episode_length': episode_lengths
+        })
+        
+        csv_path = os.path.join(TEMP_DIR, "difficulty_evaluation_data.csv")
+        results_df.to_csv(csv_path, index=False)
+        mlflow.log_artifact(csv_path, artifact_path="evaluation")
+        os.unlink(csv_path)
+        
+        # Log summary metrics
+        overall_success_rate = np.mean(episode_results)
+        mean_episode_length = np.mean(episode_lengths)
+        std_episode_length = np.std(episode_lengths)
+        
+        mlflow.log_metric("eval_overall_success_rate", overall_success_rate)
+        mlflow.log_metric("eval_mean_episode_length", mean_episode_length)
+        mlflow.log_metric("eval_std_episode_length", std_episode_length)
+        mlflow.log_metric("eval_min_episode_length", min(episode_lengths))
+        mlflow.log_metric("eval_max_episode_length", max(episode_lengths))
+        mlflow.log_metric("eval_n_episodes", n_episodes)
+        
+        print(f"--- Difficulty evaluation completed and saved to MLflow ---")
+        print(f"Overall success rate: {overall_success_rate:.3f}")
+        print(f"Episode length: {mean_episode_length:.1f}±{std_episode_length:.1f} (range: {min(episode_lengths)}-{max(episode_lengths)})")
+        print(f"Actual difficulty range: {min(actual_difficulties):.3f} - {max(actual_difficulties):.3f}")
+        print(f"Curriculum difficulty range: {min(curriculum_difficulties):.3f} - {max(curriculum_difficulties):.3f}")
+
 if __name__ == '__main__':
     print("--- RL Evaluation Script ---")
     
@@ -417,6 +600,7 @@ if __name__ == '__main__':
     render_video = input("Render final performance video? (y/n): ").lower() == 'y'
     save_statistics = input("Save VecNormalize statistics? (y/n): ").lower() == 'y'
     run_shap = input("Run SHAP evaluation? (y/n): ").lower() == 'y'
+    run_difficulty_eval = input("Run difficulty evaluation? (y/n): ").lower() == 'y'
     
     difficulty_val = None
     set_difficulty = input("Set evaluation environment difficulty? (leave blank for last training value): ").strip()
@@ -456,6 +640,10 @@ if __name__ == '__main__':
     if run_shap:
         print("--- Running SHAP evaluation ---")
         evaluate_with_SHAP(run_id_input, model, eval_env)
+    
+    if run_difficulty_eval:
+        print("--- Running difficulty evaluation ---")
+        evaluate_varying_difficulty(run_id_input, model, eval_env, config)
     
     # Clean up
     del model

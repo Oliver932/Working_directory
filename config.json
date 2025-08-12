@@ -1,6 +1,6 @@
 {
     "training": {
-        "total_timesteps": 100000,
+        "total_timesteps": 500000,
         "ppo_policy": "MultiInputPolicy",
         "verbose": 1
     },
@@ -47,7 +47,7 @@
             "check_freq": 5000,
             "increase_threshold": 0.95,
             "decrease_threshold": 0.0,
-            "difficulty_step": 0.0,
+            "difficulty_step": 0.02,
             "min_difficulty": 0.05,
             "max_difficulty": 0.8
 
