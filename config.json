@@ -1,6 +1,6 @@
 {
     "training": {
-        "total_timesteps": 100000,
+        "total_timesteps": 500000,
         "ppo_policy": "MultiInputPolicy",
         "verbose": 1
     },
@@ -33,10 +33,6 @@
             "height": 240
         },
         "difficulty": {
-            "base_observation_noise": 0.0,
-            "max_observation_noise": 0.1,
-            "base_action_noise": 0.0,
-            "max_action_noise": 0.05
         },
         "robot": {
             "verbosity": 0
@@ -50,8 +46,8 @@
         "curriculum_trainer": {
             "check_freq": 5000,
             "increase_threshold": 0.95,
-            "decrease_threshold": 0.80,
-            "difficulty_step": 0.0,
+            "decrease_threshold": 0.0,
+            "difficulty_step": 0.02,
             "min_difficulty": 0.15,
             "max_difficulty": 0.8
 

@@ -6,8 +6,6 @@ import imageio
 import glob
 from collections import deque
 import json
-import matplotlib.pyplot as plt
-import random
 
 # MLFLOW: Import the mlflow library
 import mlflow
@@ -18,13 +16,12 @@ mlflow.set_tracking_uri("file:///C:/temp/mlruns")
 # Import custom modules for the robot simulation
 from arm_ik_model import RobotKinematics, Ring
 from collision_and_render_management import CollisionAndRenderManager
-from ring_projector import RingProjector
+from ring_projector_simplified import RingProjectorSimplified
 from overview_render_manager import OverviewRenderManager
-from ring_placement import set_random_pose_box_constraint, set_random_pose_box_constraint_fixed_rotation
+from ring_placement import set_random_pose_box_constraint
 
 # Import Stable Baselines3 components for reinforcement learning
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
-from stable_baselines3.common.env_checker import check_env
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -102,7 +99,6 @@ class CustomMetricsCallback(BaseCallback):
         self.failed_grip_rate_window = deque(maxlen=window_size)
         self.avg_difficulty_window = deque(maxlen=window_size)
         self.ellipse_visible_prop_window = deque(maxlen=window_size)
-        self.ellipse_calculable_prop_window = deque(maxlen=window_size)
 
     def _on_step(self) -> bool:
         if self.locals.get("infos")[0].get("episode"):
@@ -140,16 +136,11 @@ class CustomMetricsCallback(BaseCallback):
             avg_difficulty = np.mean(self.avg_difficulty_window)
             self.logger.record("custom/avg_difficulty", avg_difficulty)
 
-            # --- Ellipse Visible & Calculable Proportions ---
+            # --- Ellipse Visible Proportion ---
             visible_steps = info.get("visible_steps", 0)
             self.ellipse_visible_prop_window.append(visible_steps / ep_len if ep_len > 0 else 0)
             avg_visible_prop = np.mean(self.ellipse_visible_prop_window)
             self.logger.record("custom/ellipse_visible_proportion", avg_visible_prop)
-
-            calculable_steps = info.get("calculable_steps", 0)
-            self.ellipse_calculable_prop_window.append(calculable_steps / ep_len if ep_len > 0 else 0)
-            avg_calculable_prop = np.mean(self.ellipse_calculable_prop_window)
-            self.logger.record("custom/ellipse_calculable_proportion", avg_calculable_prop)
 
         return True
 
@@ -228,13 +219,7 @@ class CustomRobotEnv(gym.Env):
         self.MAX_STEPS_PER_EPISODE = self.config["max_steps"]
         self.rewards = self.config["rewards"]
         self.multipliers = self.config["multipliers"]
-        
-        # Difficulty configuration
-        difficulty_config = self.config["difficulty"]
-        self.base_observation_noise = difficulty_config["base_observation_noise"]
-        self.base_action_noise = difficulty_config["base_action_noise"]
-        self.max_observation_noise = difficulty_config["max_observation_noise"]
-        self.max_action_noise = difficulty_config["max_action_noise"]
+    
         
         paths = self.config["paths"]
         camera_settings = self.config["camera"]
@@ -242,13 +227,17 @@ class CustomRobotEnv(gym.Env):
 
         # --- Define Observation and Action Spaces ---
         self.observation_space = spaces.Dict({
-            "ellipse_position": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
-            "delta_ellipse_position": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
+            # Ellipse position relative to G1 position
+            "ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
+            "delta_ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
 
-            "ellipse_semi_major_vector": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
-            "delta_ellipse_semi_major_vector": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
-            "ellipse_semi_minor_vector": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
-            "delta_ellipse_semi_minor_vector": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+            # Ellipse shape and orientation (new simplified format)
+            "ellipse_major_axis_norm": spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32),
+            "delta_ellipse_major_axis_norm": spaces.Box(low=-2.0, high=2.0, shape=(1,), dtype=np.float32),
+            "ellipse_aspect_ratio": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+            "delta_ellipse_aspect_ratio": spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32),
+            "ellipse_orientation_2d": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+            "delta_ellipse_orientation_2d": spaces.Box(low=-2.0, high=2.0, shape=(2,), dtype=np.float32),
 
             "ellipse_visible": spaces.MultiBinary(1),
 
@@ -278,22 +267,14 @@ class CustomRobotEnv(gym.Env):
         curriculum_config = self.config.get("curriculum", {})
         min_difficulty = curriculum_config.get("min_difficulty", 0.0)
         self.difficulty = min_difficulty  # Start with minimum difficulty
-        self._update_difficulty_settings()
 
         
-        self.ring_projector = RingProjector(self.robot, self.ring, vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"], method='custom')
+        self.ring_projector = RingProjectorSimplified(vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"])
         self.collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
         self.overview_render_manager = OverviewRenderManager(self.robot, self.ring, paths["ring_render"], width=overview_camera_settings["width"], height=overview_camera_settings["height"])
         
         self._setup_episode()
 
-        self.ideal_E1, self.ideal_E1_quaternion = None, None
-        self.E1_normalization_factor, self.quaternion_normalization_factor = 1.0, 1.0
-
-    def _update_difficulty_settings(self):
-        """Update observation noise, action noise based on current difficulty (0.0 to 1.0)"""
-        self.observation_noise_std = self.base_observation_noise + (self.max_observation_noise - self.base_observation_noise) * self.difficulty
-        self.action_noise_std = self.base_action_noise + (self.max_action_noise - self.base_action_noise) * self.difficulty
 
     def _setup_episode(self):
         # Set the robot to a random pose with difficulty from 0.0 to 1.0
@@ -307,12 +288,10 @@ class CustomRobotEnv(gym.Env):
 
         self.ideal_E1 = self.robot.E1.copy()
         self.ideal_E1_quaternion = self.robot.E1_quaternion.copy()
-        self.E1_normalization_factor = np.sum((self.robot.E1 - self.ideal_E1) ** 2) or 1.0
-        self.quaternion_normalization_factor = 1.0  # Quaternions are already normalized
 
         self.robot.go_home()
         self.collision_render_manager.update_poses(self.robot, self.ring)
-        self.ring_projector.update()
+        self.ring_projector.update(self.robot, self.ring)
 
 
     def get_difficulty(self):
@@ -320,94 +299,46 @@ class CustomRobotEnv(gym.Env):
         return self.difficulty
 
     def set_difficulty(self, new_difficulty):
-        """Set the difficulty level (0.0 to 1.0) and update related parameters"""
+        """Set the difficulty level (0.0 to 1.0)"""
         self.difficulty = np.clip(new_difficulty, 0.0, 1.0)
-        self._update_difficulty_settings()
         if hasattr(self, 'verbose') and getattr(self, 'verbose', 0) > 0:
-            print(f"DIFFICULTY SET TO {self.difficulty:.2f}: obs_noise={self.observation_noise_std:.3f}, action_noise={self.action_noise_std:.3f}")
+            print(f"DIFFICULTY SET TO {self.difficulty:.2f}")
 
     def adjust_difficulty(self, delta):
         """Adjust difficulty by a delta amount"""
         self.set_difficulty(self.difficulty + delta)
 
-    def _add_observation_noise(self, obs):
-        if self.observation_noise_std > 0:
-            # Add noise to ellipse-related observations
-            obs["ellipse_position"] += np.random.normal(0, self.observation_noise_std, size=obs["ellipse_position"].shape)
-            obs["delta_ellipse_position"] += np.random.normal(0, self.observation_noise_std, size=obs["delta_ellipse_position"].shape)
-            obs["ellipse_semi_major_vector"] += np.random.normal(0, self.observation_noise_std, size=obs["ellipse_semi_major_vector"].shape)
-            obs["delta_ellipse_semi_major_vector"] += np.random.normal(0, self.observation_noise_std, size=obs["delta_ellipse_semi_major_vector"].shape)
-            obs["ellipse_semi_minor_vector"] += np.random.normal(0, self.observation_noise_std, size=obs["ellipse_semi_minor_vector"].shape)
-            obs["delta_ellipse_semi_minor_vector"] += np.random.normal(0, self.observation_noise_std, size=obs["delta_ellipse_semi_minor_vector"].shape)
-            
-            # Add noise to robot state observations
-            obs["actuator_extensions"] += np.random.normal(0, self.observation_noise_std, size=obs["actuator_extensions"].shape)
-            obs["delta_extensions"] += np.random.normal(0, self.observation_noise_std, size=obs["delta_extensions"].shape)
-            obs["E1_position"] += np.random.normal(0, self.observation_noise_std, size=obs["E1_position"].shape)
-            obs["delta_E1"] += np.random.normal(0, self.observation_noise_std, size=obs["delta_E1"].shape)
-            obs["E1_quaternion"] += np.random.normal(0, self.observation_noise_std, size=obs["E1_quaternion"].shape)
-            obs["delta_E1_quaternion"] += np.random.normal(0, self.observation_noise_std, size=obs["delta_E1_quaternion"].shape)
-        
-        # Always clip all continuous observations to ensure they are within the defined space
-        for key, space in self.observation_space.spaces.items():
-            if isinstance(space, spaces.Box):
-                obs[key] = np.clip(obs[key], space.low, space.high)
-        
-        return obs
-
-    def _add_action_noise(self, action):
-        if self.action_noise_std > 0:
-            noise = np.random.normal(0, self.action_noise_std, size=action.shape)
-            action = np.clip(action + noise, -1, 1)
-        return action
-
     def _get_obs(self):
         
         ellipse_details = self.ring_projector.projected_properties
 
-        if ellipse_details.get('visible', True):
+        # Calculate relative positions (ellipse relative to G1)
 
-            observations = {
-                "ellipse_position":  ellipse_details['center_2d'],
-                "delta_ellipse_position": ellipse_details['delta_center_2d'],
-                "ellipse_semi_major_vector": ellipse_details['semi_major_vector'],
-                "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'],
-                "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'],
-                "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'],
-                "ellipse_visible": np.array([1] if ellipse_details.get('visible', False) else [0], dtype=np.int8),
+        observations = {
+            # Ellipse position relative to G1
+            "ellipse_position_relative": ellipse_details['position_2d'] - ellipse_details['g1_position_2d'],
+            "delta_ellipse_position_relative": ellipse_details['delta_position_2d'] - ellipse_details['delta_g1_position_2d'],
+            
+            # Ellipse shape and orientation (new simplified format)
+            "ellipse_major_axis_norm": np.array([ellipse_details['major_axis_norm']], dtype=np.float32),
+            "delta_ellipse_major_axis_norm": np.array([ellipse_details['delta_major_axis_norm']], dtype=np.float32),
+            "ellipse_aspect_ratio": np.array([ellipse_details['aspect_ratio']], dtype=np.float32),
+            "delta_ellipse_aspect_ratio": np.array([ellipse_details['delta_aspect_ratio']], dtype=np.float32),
+            "ellipse_orientation_2d": ellipse_details['orientation_2d'],
+            "delta_ellipse_orientation_2d": ellipse_details['delta_orientation_2d'],
+            
+            "ellipse_visible": np.array([1] if ellipse_details.get('visible', False) else [0], dtype=np.int8),
 
-                "actuator_extensions": self.robot.extensions,
-                "delta_extensions": self.robot.delta_extensions,
-                "E1_position": self.robot.E1,
-                "delta_E1": self.robot.delta_E1,
-                "E1_quaternion": self.robot.E1_quaternion,
-                "delta_E1_quaternion": self.robot.delta_E1_quaternion,
-                "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
-            }
+            "actuator_extensions": self.robot.extensions,
+            "delta_extensions": self.robot.delta_extensions,
+            "E1_position": self.robot.E1,
+            "delta_E1": self.robot.delta_E1,
+            "E1_quaternion": self.robot.E1_quaternion,
+            "delta_E1_quaternion": self.robot.delta_E1_quaternion,
+            "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
+        }
 
-        else:
-
-            ellipse_details = self.ring_projector.last_obs
-
-            observations = {
-                "ellipse_position":  ellipse_details['center_2d'],
-                "delta_ellipse_position": ellipse_details['delta_center_2d'],
-                "ellipse_semi_major_vector": ellipse_details['semi_major_vector'],
-                "delta_ellipse_semi_major_vector": ellipse_details['delta_semi_major_vector'],
-                "ellipse_semi_minor_vector": ellipse_details['semi_minor_vector'],
-                "delta_ellipse_semi_minor_vector": ellipse_details['delta_semi_minor_vector'],
-                "ellipse_visible": np.zeros(1 , dtype=np.int8),  # Not visible
-
-                "actuator_extensions": self.robot.extensions,
-                "delta_extensions": self.robot.delta_extensions,
-                "E1_position": self.robot.E1,
-                "delta_E1": self.robot.delta_E1,
-                "E1_quaternion": self.robot.E1_quaternion,
-                "delta_E1_quaternion": self.robot.delta_E1_quaternion,
-                "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
-            }
-
-        return self._add_observation_noise(observations)
+        return observations
 
     def _get_info(self):
         # This is now only called when the episode ends
@@ -419,7 +350,6 @@ class CustomRobotEnv(gym.Env):
             "failed_grips": self.failed_grips,
             "difficulty": self.episode_difficulty,
             "visible_steps": self.visible_steps,
-            "calculable_steps": self.calculable_steps,
         }
 
     def reset(self, seed=None, options=None):
@@ -432,7 +362,6 @@ class CustomRobotEnv(gym.Env):
         self.grip_attempts = 0
         self.failed_grips = 0
         self.visible_steps = 0
-        self.calculable_steps = 0
         
         # Reset previous distance variables for improvement rewards
         self.previous_dist_E1 = None
@@ -445,10 +374,8 @@ class CustomRobotEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         terminated = False
-        # reward = self.rewards["time"] * self.current_step
         reward = 0.0
         
-        action = self._add_action_noise(action)
         pose_deltas = action[0:4]
         should_grip = action[4] > 0.0
 
@@ -486,14 +413,12 @@ class CustomRobotEnv(gym.Env):
                 pose_deltas[2] * self.multipliers["rx"], 
                 pose_deltas[3] * self.multipliers["rz"]
             )
-            self.ring_projector.update()
+            self.ring_projector.update(self.robot, self.ring)
             
-            # Update visibility and calculability counters
+            # Update visibility counter
             ellipse_details = self.ring_projector.projected_properties
             if ellipse_details.get('visible', False):
                 self.visible_steps += 1
-            if ellipse_details.get('calculable', False):
-                self.calculable_steps += 1
 
             self.collision_render_manager.update_poses(self.robot, self.ring)
             if self.collision_render_manager.check_collision():
@@ -502,7 +427,7 @@ class CustomRobotEnv(gym.Env):
                 terminated = True
 
         # Reward movement towards ideal position and orientation
-        current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2) / self.E1_normalization_factor
+        current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2)
         # Calculate quaternion distance (1 - |dot product|) to measure rotational difference
         quaternion_dot = np.abs(np.dot(self.robot.E1_quaternion, self.ideal_E1_quaternion))
         current_dist_quaternion = 1.0 - quaternion_dot  # Distance metric for quaternions
@@ -656,7 +581,7 @@ if __name__ == '__main__':
         mlflow.log_artifact(config_path)
         os.unlink(config_path)  # Clean up temp file
 
-        MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps", "calculable_steps")
+        MONITOR_KEYWORDS = ("is_success", "is_collision", "is_invalid_move", "grip_attempts", "failed_grips", "difficulty", "visible_steps")
         
         # --- Environment Setup ---
         env_config = CONFIG["environment"].copy()
@@ -671,9 +596,10 @@ if __name__ == '__main__':
         
         # Specify which observation keys to normalize (only Box spaces, not MultiBinary)
         norm_obs_keys = [
-            "ellipse_position", "delta_ellipse_position",
-            "ellipse_semi_major_vector", "delta_ellipse_semi_major_vector", 
-            "ellipse_semi_minor_vector", "delta_ellipse_semi_minor_vector",
+            "ellipse_position_relative", "delta_ellipse_position_relative",
+            "ellipse_major_axis_norm", "delta_ellipse_major_axis_norm",
+            "ellipse_aspect_ratio", "delta_ellipse_aspect_ratio",
+            "ellipse_orientation_2d", "delta_ellipse_orientation_2d",
             "actuator_extensions", "delta_extensions",
             "E1_position", "delta_E1", "E1_quaternion", "delta_E1_quaternion"
         ]
@@ -782,4 +708,3 @@ if __name__ == '__main__':
         print(f"--- MLflow Run Finished ---")
         print(f"Run ID: {current_run_id}")
         print(f"To view results, run 'mlflow ui --backend-store-uri file:///C:/temp/mlruns' in your terminal.")
-        
