@@ -257,6 +257,77 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     
     plt.show()
 
+# currently used - at high difficulty we still provide easy examples to prevent forgetting
+def set_random_pose_box_limit(robot, ring, collision_render_manager, min_dist_difficulty=0.1, difficulty=0.5, box_width=190, box_height=120, max_distance=np.sqrt(190**2 + 120**2), max_attempts=100):
+    """
+    Randomly sets the E1 (end-effector) pose of the robot within a rectangular box constraint, with distance and rotation difficulty scaling.
+
+    The function attempts to find a valid, collision-free pose for the robot's end-effector (E1) by randomly sampling positions within a box of size `box_width` x `box_height` (in mm), centered at the robot's home position. The distance from home and the tilt angles (rx, rz) are scaled by the `difficulty` parameter. The function ensures the pose is kinematically valid and does not result in a collision.
+
+    Args:
+        robot: Robot kinematics object. Must provide E1_home_x, E1_home_y, and 'tilt_rx_limit_deg', 'tilt_rz_limit_deg' in params.
+        ring: Ring object to be placed at the generated pose.
+        collision_render_manager: CollisionAndRenderManager instance for collision checking.
+        min_dist_difficulty (float, optional): Minimum normalized distance from home (as a fraction of max_distance) for the pose. Default is 0.15.
+        difficulty (float, optional): Difficulty level (0-1+). Scales the maximum distance and rotation. Values >1 are capped by box size.
+        box_width (float, optional): Width of the allowed box region in mm. Default is 190.
+        box_height (float, optional): Height of the allowed box region in mm. Default is 120.
+        max_distance (float, optional): Maximum allowed distance from home. Default is sqrt(box_width**2 + box_height**2).
+        max_attempts (int, optional): Maximum number of random samples to try before giving up. Default is 100.
+
+    Returns:
+        success (bool): True if a valid, collision-free pose was found; False otherwise.
+        pose (dict): Dictionary with keys 'x', 'y', 'rx', 'rz' for the pose (in mm and degrees). If unsuccessful, returns the home pose.
+        actual_difficulty (float): The normalized difficulty of the returned pose (0 if unsuccessful).
+    """
+    rx_lim = robot.params.get('tilt_rx_limit_deg', 0.0)
+    rz_lim = robot.params.get('tilt_rz_limit_deg', 0.0)
+    x_home = robot.E1_home_x
+    y_home = robot.E1_home_y
+
+    for _ in range(max_attempts):
+        # Randomly choose a distance from 0 to difficulty * max_distance
+        max_dist_for_diff = max(min_dist_difficulty * max_distance, min(difficulty * max_distance, max_distance))
+        min_dist_for_diff = min_dist_difficulty * max_distance
+        rand_distance = np.random.uniform(min_dist_for_diff, max_dist_for_diff)
+
+        # Calculate valid angle range to stay within the box
+        min_valid_angle = 0.0
+        if rand_distance > box_width:
+            min_valid_angle = np.arccos(min(1.0, box_width / rand_distance))
+        max_valid_angle = np.pi / 2
+        if rand_distance > box_height:
+            max_valid_angle = np.arcsin(min(1.0, box_height / rand_distance))
+        if min_valid_angle > max_valid_angle:
+            if not np.isclose(min_valid_angle, max_valid_angle):
+                continue
+            max_valid_angle = min_valid_angle
+
+        angle = np.random.uniform(min_valid_angle, max_valid_angle)
+        x = x_home + rand_distance * np.cos(angle)
+        y = y_home + rand_distance * np.sin(angle)
+
+        # Generate random tilts based on difficulty, with random signs
+        d_rx = np.random.uniform(0, difficulty)
+        d_rz = np.random.uniform(0, difficulty)
+        rx = np.random.choice([-1, 1]) * d_rx * rx_lim
+        rz = np.random.choice([-1, 1]) * d_rz * rz_lim
+
+        e1_position = np.array([x, y, 0], dtype=np.float32)
+        pose = {'x': x, 'y': y, 'rx': rx, 'rz': rz}
+
+        if robot.update_from_e1_pose(e1_position, rx, rz):
+            robot.create_ring(ring=ring)
+            robot.go_home()
+            collision_render_manager.update_poses(robot, ring)
+            if not collision_render_manager.check_collision():
+                robot.update_from_e1_pose(e1_position, rx, rz)
+                actual_difficulty = _calculate_pose_difficulty_box(robot, x, y, rx, rz, x_home, y_home, max_distance, rx_lim, rz_lim)
+                return True, pose, actual_difficulty
+            
+    robot.go_home()
+    home_pose = {'x': x_home, 'y': y_home, 'rx': 0, 'rz': 0}
+    return False, home_pose, 0.0
     
 def set_random_e1_pose_circular_with_repeats(robot, ring, collision_render_manager, difficulty=0.5, max_attempts=20):
     """
@@ -563,7 +634,6 @@ def set_random_pose_box_constraint_fixed_rotation(robot, ring, collision_render_
     home_pose = {'x': x_home, 'y': y_home, 'rx': 0, 'rz': 0}
     return False, home_pose, 0.0
 
-# current best performance!
 def set_random_pose_box_constraint(robot, ring, collision_render_manager, difficulty=0.5, 
                                  box_width=190, box_height=120, max_attempts=100):
     """
@@ -661,6 +731,7 @@ def set_random_pose_box_constraint(robot, ring, collision_render_manager, diffic
     # Return a default home pose dictionary, but with a failure status
     home_pose = {'x': x_home, 'y': y_home, 'rx': 0, 'rz': 0}
     return False, home_pose, 0.0
+
 
 def generate_pose_difficulty_from_box_angle_free(robot, ring, collision_render_manager, difficulty=0.5, 
                                                box_width=190, box_height=120, max_attempts=100):
@@ -850,11 +921,11 @@ if __name__ == '__main__':
     ring_projector = RingProjector(robot, ring, vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"], method='custom')
     collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
     
-    test_ring_placement(robot, ring, ring_projector, collision_render_manager, set_random_pose_box_constraint_fixed_rotation)
+    test_ring_placement(robot, ring, ring_projector, collision_render_manager, set_random_pose_box_limit)
 
-    set_random_pose_box_constraint(robot, ring, collision_render_manager, difficulty=1)
+    set_random_pose_box_limit(robot, ring, collision_render_manager, difficulty=1)
     visualize_system(robot, ring=ring)
-    set_random_pose_box_constraint(robot, ring, collision_render_manager, difficulty=1)
+    set_random_pose_box_limit(robot, ring, collision_render_manager, difficulty=1)
     visualize_system(robot, ring=ring)
 
 

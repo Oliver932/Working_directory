@@ -18,7 +18,7 @@ from arm_ik_model import RobotKinematics, Ring
 from collision_and_render_management import CollisionAndRenderManager
 from ring_projector_simplified import RingProjectorSimplified
 from overview_render_manager import OverviewRenderManager
-from ring_placement import set_random_pose_box_constraint
+from ring_placement import set_random_pose_box_limit
 
 # Import Stable Baselines3 components for reinforcement learning
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
@@ -278,7 +278,7 @@ class CustomRobotEnv(gym.Env):
 
     def _setup_episode(self):
         # Set the robot to a random pose with difficulty from 0.0 to 1.0
-        success, pose, actual_difficulty = set_random_pose_box_constraint(self.robot, self.ring, self.collision_render_manager, difficulty=self.difficulty)
+        success, pose, actual_difficulty = set_random_pose_box_limit(self.robot, self.ring, self.collision_render_manager, difficulty=self.difficulty)
 
         if not success:
             raise ValueError("Failed to set a valid random pose for the robot and ring. Please check the configuration and constraints.")
@@ -400,7 +400,7 @@ class CustomRobotEnv(gym.Env):
                     self.is_collision = True
                     terminated = True
 
-                # terminated = True  # NEW ADDITION END ON FAILED GRIP
+                terminated = True  # NEW ADDITION END ON FAILED GRIP
         else:
 
             # update robot gripped state
