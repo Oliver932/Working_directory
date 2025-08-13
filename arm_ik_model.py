@@ -263,11 +263,6 @@ class RobotKinematics:
         self.E1_home_y = home_pose.get('y', 350)
         self.E1_home_rx = home_pose.get('rx', 0)
         self.E1_home_rz = home_pose.get('rz', 0)
-        
-        # Track current pose
-        self._current_e1 = np.array([self.E1_home_x, self.E1_home_y, 0], dtype=np.float32)
-        self._current_rx = self.E1_home_rx
-        self._current_rz = self.E1_home_rz
 
     def _zero_deltas(self):
         """Zero all delta tracking arrays."""
@@ -520,7 +515,17 @@ class RobotKinematics:
             - End-effector points (C1-C4, E1, G1)
             - Orientation vectors and gripper points
             - Camera position and orientation
+            - Delta arrays (calculated from previous state)
         """
+        # Store previous state for delta calculation (if robot was previously solved)
+        if hasattr(self, 'E1') and hasattr(self, 'extensions') and hasattr(self, 'E1_quaternion'):
+            prev_e1 = self.E1.copy()
+            prev_extensions = self.extensions.copy()
+            prev_E1_quaternion = self.E1_quaternion.copy()
+            calculate_deltas = True
+        else:
+            calculate_deltas = False
+        
         # --- Step 0: Validate input angles against physical limits ---
         if abs(rx_deg) > self.params['tilt_rx_limit_deg']:
             self.last_solve_successful = False
@@ -630,7 +635,14 @@ class RobotKinematics:
         self.plane_normal /= np.linalg.norm(self.plane_normal)
         self.extensions = extensions
         self.E1_quaternion = E1_quaternion
-        # delta_E1 and delta_E1_quaternion will be updated in move_E1
+        
+        # Calculate deltas if previous state was available
+        if calculate_deltas:
+            actuator_delta = self.extensions - prev_extensions
+            self.delta_extensions[:] = actuator_delta
+            self.delta_E1[:] = self.E1 - prev_e1
+            self.delta_E1_quaternion[:] = self.E1_quaternion - prev_E1_quaternion
+        
         self.last_solve_successful = True
         self.last_error_msg = "IK solve successful."
         if self.verbosity >= 1:
@@ -648,16 +660,14 @@ class RobotKinematics:
         Returns:
             bool: True if successfully moved to home pose, False otherwise.
         """
-        self._current_e1 = np.array([self.E1_home_x, self.E1_home_y, 0], dtype=np.float32)
-        self._current_rx = self.E1_home_rx
-        self._current_rz = self.E1_home_rz
-        
-        success = self.update_from_e1_pose(self._current_e1, self._current_rx, self._current_rz)
+        success = self.update_from_e1_pose(np.array([self.E1_home_x, self.E1_home_y, 0], dtype=np.float32), self.E1_home_rx, self.E1_home_rz)
         
         if not success:
-            self._zero_deltas()
             if self.verbosity >= 1:
                 print(f"go_home failed: {self.last_error_msg}")
+
+        else:
+            self._zero_deltas()
         
         return success
 
@@ -681,19 +691,12 @@ class RobotKinematics:
                 - reason (str): Description of outcome.
                 - actuator_delta_array (np.ndarray or None): Change in actuator extensions.
         """
-        # Store previous state for rollback
-        prev_e1 = self._current_e1.copy()
-        prev_rx = self._current_rx
-        prev_rz = self._current_rz
-        prev_extensions = self.extensions.copy()
-        prev_E1_quaternion = self.E1_quaternion.copy()
-        
         # Calculate new target pose
-        new_e1 = prev_e1 + np.array([dx, dy, 0], dtype=np.float32)
-        new_rx = prev_rx + drx
-        new_rz = prev_rz + drz
+        new_e1 = self.E1 + np.array([dx, dy, 0], dtype=np.float32)
+        new_rx = self.rx + drx
+        new_rz = self.rz + drz
         
-        # Attempt to solve for new pose
+        # Attempt to solve for new pose (deltas calculated automatically in update_from_e1_pose)
         success = self.update_from_e1_pose(new_e1, new_rx, new_rz)
         
         if not success:
@@ -701,18 +704,7 @@ class RobotKinematics:
             self._zero_deltas()
             return False, self.last_error_msg, None
         
-        # Successful move: update current pose and calculate deltas
-        self._current_e1 = new_e1
-        self._current_rx = new_rx
-        self._current_rz = new_rz
-        
-        # Calculate deltas
-        actuator_delta = self.extensions - prev_extensions
-        self.delta_extensions[:] = actuator_delta
-        self.delta_E1[:] = self.E1 - prev_e1
-        self.delta_E1_quaternion[:] = self.E1_quaternion - prev_E1_quaternion
-        
-        return True, "Move successful", actuator_delta
+        return True, "Move successful", self.delta_extensions.copy()
 
     def set_random_e1_pose(self, min_difficulty=0, max_difficulty=1, max_attempts=30):
         """

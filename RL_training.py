@@ -2,7 +2,6 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import os
-import imageio
 import glob
 import shutil
 from collections import deque
@@ -26,64 +25,6 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-
-# ==================================================================================
-# == Video Recording Callback                                                     ==
-# ==================================================================================
-class VideoRecorderCallback(BaseCallback):
-    """A custom callback for recording and saving evaluation videos as MP4 files."""
-    def __init__(self, eval_env: gym.Env, eval_freq: int, n_eval_episodes: int, train_env=None, verbose: int = 1):
-        super().__init__(verbose)
-        self.eval_env = eval_env
-        self.eval_freq = eval_freq
-        self.n_eval_episodes = n_eval_episodes
-        self.train_env = train_env
-
-    def _sync_difficulty(self):
-        """Synchronize difficulty from training environment to evaluation environment."""
-        if self.train_env is not None:
-            # Get current difficulty from training environment
-            current_difficulty = self.train_env.env_method('get_difficulty')[0]
-            # Set the same difficulty in evaluation environment
-            self.eval_env.env_method('set_difficulty', current_difficulty)
-            print(f"--- Synced difficulty to evaluation environment: {current_difficulty:.2f} ---")
-
-    def _on_step(self) -> bool:
-        if self.n_calls > 0 and self.n_calls % self.eval_freq == 0:
-            # Sync difficulty from training to evaluation environment
-            self._sync_difficulty()
-            
-            overview_frames, robot_perspective_frames = [], []
-            print(f"--- Recording performance at step {self.n_calls} ---")
-            for _ in range(self.n_eval_episodes):
-                obs = self.eval_env.reset()
-                done = [False]
-                while not done[0]:
-                    overview_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='scene_overview'))
-                    robot_perspective_frames.append(self.eval_env.envs[0].unwrapped.render(camera_name='robot_perspective'))
-                    action, _ = self.model.predict(obs, deterministic=True)
-                    obs, _, done, _ = self.eval_env.step(action)
-            
-            # Use temporary files that get deleted after MLflow logging
-            temp_dir = os.path.join("C:/temp/artifacts", f"run_{mlflow.active_run().info.run_id}")
-            os.makedirs(temp_dir, exist_ok=True)
-            
-            overview_vid_path = os.path.join(temp_dir, f"step_{self.n_calls}_overview.mp4")
-            robot_vid_path = os.path.join(temp_dir, f"step_{self.n_calls}_robot.mp4")
-            
-            print(f"--- Saving overview video to {overview_vid_path} ---")
-            imageio.mimwrite(overview_vid_path, [np.array(frame) for frame in overview_frames], fps=30, format='FFMPEG')
-            print(f"--- Saving robot perspective video to {robot_vid_path} ---")
-            imageio.mimwrite(robot_vid_path, [np.array(frame) for frame in robot_perspective_frames], fps=30, format='FFMPEG')
-
-            # MLFLOW: Log the generated videos as artifacts
-            mlflow.log_artifact(overview_vid_path, artifact_path="replays")
-            mlflow.log_artifact(robot_vid_path, artifact_path="replays")
-            
-            # Clean up temporary files
-            os.unlink(overview_vid_path)
-            os.unlink(robot_vid_path)
-        return True
 
 # ==================================================================================
 # == Custom Metrics Callback                                                      ==
@@ -235,34 +176,6 @@ class CustomRobotEnv(gym.Env):
         overview_camera_settings = self.config["overview_camera"]
 
         # --- Define Observation and Action Spaces ---
-        # self.observation_space = spaces.Dict({
-        #     # Ellipse position relative to G1 position
-        #     "ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
-        #     "delta_ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
-
-        #     # Ellipse shape and orientation (new simplified format)
-        #     "ellipse_major_axis_norm": spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32),
-        #     "delta_ellipse_major_axis_norm": spaces.Box(low=-2.0, high=2.0, shape=(1,), dtype=np.float32),
-        #     "ellipse_aspect_ratio": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
-        #     "delta_ellipse_aspect_ratio": spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32),
-        #     "ellipse_orientation_2d": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
-        #     "delta_ellipse_orientation_2d": spaces.Box(low=-2.0, high=2.0, shape=(2,), dtype=np.float32),
-
-        #     "ellipse_visible": spaces.MultiBinary(1),
-
-        #     "actuator_extensions": spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32),
-        #     "delta_extensions": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
-
-        #     "E1_position": spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
-        #     "delta_E1": spaces.Box(low=-np.pi, high=np.pi, shape=(3,), dtype=np.float32),
-        #     "E1_quaternion": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
-        #     "delta_E1_quaternion": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
-
-        #     "last_move_successful": spaces.MultiBinary(1),
-
-        # })
-
-        # --- Define Observation and Action Spaces ---
         self.observation_space = spaces.Dict({
             # Ellipse position relative to G1 position
             "ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
@@ -342,31 +255,6 @@ class CustomRobotEnv(gym.Env):
         ellipse_details = self.ring_projector.projected_properties
 
         # Calculate relative positions (ellipse relative to G1)
-
-        # observations = {
-        #     # Ellipse position relative to G1
-        #     "ellipse_position_relative": ellipse_details['position_2d'] - ellipse_details['g1_position_2d'],
-        #     "delta_ellipse_position_relative": ellipse_details['delta_position_2d'] - ellipse_details['delta_g1_position_2d'],
-            
-        #     # Ellipse shape and orientation (new simplified format)
-        #     "ellipse_major_axis_norm": np.array([ellipse_details['major_axis_norm']], dtype=np.float32),
-        #     "delta_ellipse_major_axis_norm": np.array([ellipse_details['delta_major_axis_norm']], dtype=np.float32),
-        #     "ellipse_aspect_ratio": np.array([ellipse_details['aspect_ratio']], dtype=np.float32),
-        #     "delta_ellipse_aspect_ratio": np.array([ellipse_details['delta_aspect_ratio']], dtype=np.float32),
-        #     "ellipse_orientation_2d": ellipse_details['orientation_2d'],
-        #     "delta_ellipse_orientation_2d": ellipse_details['delta_orientation_2d'],
-            
-        #     "ellipse_visible": np.array([1] if ellipse_details.get('visible', False) else [0], dtype=np.int8),
-
-        #     "actuator_extensions": self.robot.extensions,
-        #     "delta_extensions": self.robot.delta_extensions,
-        #     "E1_position": self.robot.E1,
-        #     "delta_E1": self.robot.delta_E1,
-        #     "E1_quaternion": self.robot.E1_quaternion,
-        #     "delta_E1_quaternion": self.robot.delta_E1_quaternion,
-        #     "last_move_successful": np.array([1] if getattr(self.robot, 'last_solve_successful', True) else [0], dtype=np.int8)
-        # }
-
         observations = {
             # Ellipse position relative to G1
             "ellipse_position_relative": ellipse_details['position_2d'] - ellipse_details['g1_position_2d'],
@@ -382,6 +270,7 @@ class CustomRobotEnv(gym.Env):
 
             "actuator_extensions": self.robot.extensions,
             "delta_extensions": self.robot.delta_extensions,
+
         }
 
         return observations
@@ -411,9 +300,12 @@ class CustomRobotEnv(gym.Env):
         self.failed_grips = 0
         self.visible_steps = 0
         
-        # Reset previous distance variables for improvement rewards
-        self.previous_dist_E1 = None
-        self.previous_dist_quaternion = None
+        # # Reset previous distance variables for improvement rewards
+        # self.previous_dist_E1 = None
+        # self.previous_dist_quaternion = None
+
+        # lets track some more complicated state postions for our reward
+        
         
         self._setup_episode()
 
@@ -474,25 +366,25 @@ class CustomRobotEnv(gym.Env):
                 self.is_collision = True
                 terminated = True
 
-        # Reward movement towards ideal position and orientation
-        current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2)
-        # Calculate quaternion distance (1 - |dot product|) to measure rotational difference
-        quaternion_dot = np.abs(np.dot(self.robot.E1_quaternion, self.ideal_E1_quaternion))
-        current_dist_quaternion = 1.0 - quaternion_dot  # Distance metric for quaternions
+        # # Reward movement towards ideal position and orientation
+        # current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2)
+        # # Calculate quaternion distance (1 - |dot product|) to measure rotational difference
+        # quaternion_dot = np.abs(np.dot(self.robot.E1_quaternion, self.ideal_E1_quaternion))
+        # current_dist_quaternion = 1.0 - quaternion_dot  # Distance metric for quaternions
         
-        # Calculate improvement rewards (only after first step when previous distances exist)
-        if self.previous_dist_E1 is not None:
-            # Reward improvement (movement towards goal)
-            improvement_E1 = (self.previous_dist_E1 - current_dist_E1)
-            improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion)
+        # # Calculate improvement rewards (only after first step when previous distances exist)
+        # if self.previous_dist_E1 is not None:
+        #     # Reward improvement (movement towards goal)
+        #     improvement_E1 = (self.previous_dist_E1 - current_dist_E1)
+        #     improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion)
             
-            # Scale the improvement rewards
-            reward += improvement_E1 # Reward position improvement
-            reward += improvement_quaternion # Reward orientation improvement
+        #     # Scale the improvement rewards
+        #     reward += improvement_E1 # Reward position improvement
+        #     reward += improvement_quaternion # Reward orientation improvement
         
-        # Store current distances for next step
-        self.previous_dist_E1 = current_dist_E1
-        self.previous_dist_quaternion = current_dist_quaternion
+        # # Store current distances for next step
+        # self.previous_dist_E1 = current_dist_E1
+        # self.previous_dist_quaternion = current_dist_quaternion
 
         if not self.robot.last_solve_successful:
             reward += self.rewards["fail_move"]
@@ -607,7 +499,6 @@ if __name__ == '__main__':
     # --- Runtime Options ---
     print("--- Runtime Configuration ---")
     run_name_input = input("Enter a name for this training run (or press Enter for default): ")
-    record_while_training = input("Record performance videos during training? (y/n): ").lower() == 'y'
     print("-----------------------------")
 
     # --- Generate Run Name ---
@@ -648,15 +539,6 @@ if __name__ == '__main__':
         train_env = DummyVecEnv([make_env])
         
         # Specify which observation keys to normalize (only Box spaces, not MultiBinary)
-        # norm_obs_keys = [
-        #     "ellipse_position_relative", "delta_ellipse_position_relative",
-        #     "ellipse_major_axis_norm", "delta_ellipse_major_axis_norm",
-        #     "ellipse_aspect_ratio", "delta_ellipse_aspect_ratio",
-        #     "ellipse_orientation_2d", "delta_ellipse_orientation_2d",
-        #     "actuator_extensions", "delta_extensions",
-        #     "E1_position", "delta_E1", "E1_quaternion", "delta_E1_quaternion"
-        # ]
-
         norm_obs_keys = [
             "ellipse_position_relative", "delta_ellipse_position_relative",
             "ellipse_major_axis_norm", "delta_ellipse_major_axis_norm",
@@ -664,19 +546,9 @@ if __name__ == '__main__':
             "ellipse_orientation_2d", "delta_ellipse_orientation_2d",
             "actuator_extensions", "delta_extensions",
         ]
+        
         train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., norm_obs_keys=norm_obs_keys)
 
-        eval_env = None
-        needs_eval_env = record_while_training
-        if needs_eval_env:
-            def make_eval_env():
-                env = CustomRobotEnv(render_mode='rgb_array', config=CONFIG["environment"])
-                env = Monitor(env)
-                return env
-            eval_env = DummyVecEnv([make_eval_env])
-            eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10., norm_obs_keys=norm_obs_keys)
-            # Synchronize statistics
-            eval_env.obs_rms = train_env.obs_rms
 
         # --- Callback Setup ---
         custom_metrics_callback = CustomMetricsCallback(
@@ -688,16 +560,6 @@ if __name__ == '__main__':
         )
         active_callbacks = [custom_metrics_callback, curriculum_callback] 
         # active_callbacks = [custom_metrics_callback] #FROZEN curriculum for direct comparison
-
-
-        if needs_eval_env:
-            video_callback = VideoRecorderCallback(
-                eval_env=eval_env, 
-                train_env=train_env,
-                **CONFIG["callbacks"]["video_recorder"]
-            )
-            if record_while_training:
-                active_callbacks.append(video_callback)
 
         callback_list = CallbackList(active_callbacks)
 
@@ -769,8 +631,6 @@ if __name__ == '__main__':
         del model
         
         train_env.close()
-        if eval_env:
-            eval_env.close()
         
         print(f"--- MLflow Run Finished ---")
         print(f"Run ID: {current_run_id}")
