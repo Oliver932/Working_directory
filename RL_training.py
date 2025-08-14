@@ -178,19 +178,25 @@ class CustomRobotEnv(gym.Env):
         # --- Define Observation and Action Spaces ---
         self.observation_space = spaces.Dict({
             # Ellipse position relative to G1 position
-            "ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
-            "delta_ellipse_position_relative": spaces.Box(low=-5.0, high=5.0, shape=(2,), dtype=np.float32),
+            "ellipse_position_relative": spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=np.float32),
+            "delta_ellipse_position_relative": spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=np.float32),
 
             # Ellipse shape and orientation (new simplified format)
-            "ellipse_major_axis_norm": spaces.Box(low=0.0, high=2.0, shape=(1,), dtype=np.float32),
-            "delta_ellipse_major_axis_norm": spaces.Box(low=-2.0, high=2.0, shape=(1,), dtype=np.float32),
+            "ellipse_major_axis_norm": spaces.Box(low=0.0, high=np.inf, shape=(1,), dtype=np.float32),
+            "delta_ellipse_major_axis_norm": spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
             "ellipse_aspect_ratio": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
             "delta_ellipse_aspect_ratio": spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32),
             "ellipse_orientation_2d": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
             "delta_ellipse_orientation_2d": spaces.Box(low=-2.0, high=2.0, shape=(2,), dtype=np.float32),
 
-            "actuator_extensions": spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32),
-            "delta_extensions": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
+            # "actuator_extensions": spaces.Box(low=0.0, high=1.0, shape=(4,), dtype=np.float32),
+            # "delta_extensions": spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32),
+
+            "relative_G1_position": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+            "G1_velocity": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+            "approach_vec": spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
+            "radial_vec": spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32),
+            "G1_angular_velocity": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)
 
         })
 
@@ -228,8 +234,12 @@ class CustomRobotEnv(gym.Env):
         # Use the actual calculated difficulty for logging purposes
         self.episode_difficulty = actual_difficulty
 
-        self.ideal_E1 = self.robot.E1.copy()
-        self.ideal_E1_quaternion = self.robot.E1_quaternion.copy()
+        # setup tracking for improvements
+        self.ideal_relative_G1 = self.robot.G1_relative_position.copy()
+        self.ideal_rotation_vector = np.column_stack([self.robot.approach_vec, self.robot.radial_vec, self.robot.tangential_vec])
+
+        self.current_G1_closeness = np.zeros(1, dtype=np.float32)
+        self.current_G1_angular_closeness = np.zeros(1, dtype=np.float32)
 
         self.robot.go_home()
         self.collision_render_manager.update_poses(self.robot, self.ring)
@@ -268,8 +278,15 @@ class CustomRobotEnv(gym.Env):
             "ellipse_orientation_2d": ellipse_details['orientation_2d'],
             "delta_ellipse_orientation_2d": ellipse_details['delta_orientation_2d'],
 
-            "actuator_extensions": self.robot.extensions,
-            "delta_extensions": self.robot.delta_extensions,
+            # "actuator_extensions": self.robot.extensions,
+            # "delta_extensions": self.robot.delta_extensions,
+
+            "relative_G1_position": self.robot.G1_relative_position,
+            "G1_velocity": self.robot.G1_velocity,
+
+            "approach_vec": self.robot.approach_vec,
+            "radial_vec": self.robot.radial_vec,
+            "G1_angular_velocity": self.robot.G1_angular_velocity
 
         }
 
@@ -299,13 +316,6 @@ class CustomRobotEnv(gym.Env):
         self.grip_attempts = 0
         self.failed_grips = 0
         self.visible_steps = 0
-        
-        # # Reset previous distance variables for improvement rewards
-        self.previous_dist_E1 = None
-        self.previous_dist_quaternion = None
-
-        # lets track some more complicated state postions for our reward
-        
         
         self._setup_episode()
 
@@ -366,24 +376,34 @@ class CustomRobotEnv(gym.Env):
                 self.is_collision = True
                 terminated = True
 
-        # Reward movement towards ideal position and orientation
-        current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2)
-        # Calculate quaternion distance (1 - |dot product|) to measure rotational difference
-        quaternion_dot = np.abs(np.dot(self.robot.E1_quaternion, self.ideal_E1_quaternion))
-        current_dist_quaternion = 1.0 - quaternion_dot  # Distance metric for quaternions
-        
-        # Calculate improvement rewards (only after first step when previous distances exist)
-        if self.previous_dist_E1 is not None:
-            # Reward improvement (movement towards goal)
-            improvement_E1 = (self.previous_dist_E1 - current_dist_E1)
-            improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion)
-            # Scale the improvement rewards
-            reward += improvement_E1 * 0.5  # Reward position improvement
-            reward += improvement_quaternion * 0.5  # Reward orientation improvement
 
-        # Store current distances for next step
-        self.previous_dist_E1 = current_dist_E1
-        self.previous_dist_quaternion = current_dist_quaternion
+        # Reward movement towards ideal position
+        TRANSLATION_PRECISION_FACTOR = 1 # can be neatly set to determine the proportion of max translation reward gained at the tolerance boundary
+        TRANSLATION_REWARD_SCALING = 1
+        prev_G1_closeness = self.current_G1_closeness.copy()
+        # convert the current distance into the stationary rings frame
+        current_G1_dist = self.robot.G1_relative_position - self.ideal_relative_G1
+        current_G1_dist_ring_frame = self.ideal_rotation_vector.T @ current_G1_dist
+        # we scale the closeness based on the tolerances for each axis
+        translation_tolerances = np.asarray([19.68666481971737/2, 44.19397354125971/2, 57.67107772827144/2])
+        # use a gaussian a smoth closeness (1 when in the same place, 0 when infinitely apart)
+        self.current_G1_closeness = np.exp(np.sum(-TRANSLATION_PRECISION_FACTOR * np.pow(current_G1_dist_ring_frame / translation_tolerances, 2)))
+        # add the progress towards closeness 1 to the reward.
+        reward += TRANSLATION_REWARD_SCALING * (self.current_G1_closeness - prev_G1_closeness)
+
+        # reward movement towards ideal orientation
+        ROTATION_PRECISION_FACTOR = 1 # can be neatly set to determine the proportion of max rotation reward gained at the tolerance boundary
+        ROTATION_REWARD_SCALING = 1
+        prev_G1_angular_closeness = self.current_G1_angular_closeness.copy()
+        current_rotation_vector = np.column_stack([self.robot.approach_vec, self.robot.radial_vec, self.robot.tangential_vec])
+        # Relative rotation matrix
+        R_rel = current_rotation_vector @ self.ideal_rotation_vector.T
+        # Angle of rotation (in radians)
+        angle_rad = np.arccos(np.clip((np.trace(R_rel) - 1) / 2, -1.0, 1.0))
+        angle_deg = np.degrees(angle_rad)
+        angular_tolerance = 10 #DEGREES
+        self.current_G1_angular_closeness = np.exp(-ROTATION_PRECISION_FACTOR * np.pow(angle_deg / angular_tolerance, 2))
+        reward += ROTATION_REWARD_SCALING * (self.current_G1_angular_closeness - prev_G1_angular_closeness)
 
         if not self.robot.last_solve_successful:
             reward += self.rewards["fail_move"]
@@ -543,7 +563,9 @@ if __name__ == '__main__':
             "ellipse_major_axis_norm", "delta_ellipse_major_axis_norm",
             "ellipse_aspect_ratio", "delta_ellipse_aspect_ratio",
             "ellipse_orientation_2d", "delta_ellipse_orientation_2d",
-            "actuator_extensions", "delta_extensions",
+            # "actuator_extensions", "delta_extensions",
+            "relative_G1_position", "G1_velocity",
+            "approach_vec", "radial_vec", "G1_angular_velocity"
         ]
         
         train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10., norm_obs_keys=norm_obs_keys)

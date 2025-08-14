@@ -131,9 +131,19 @@ class RobotKinematics:
         
         # Orientation vectors
         approach_vec, tangential_vec, radial_vec (np.ndarray): Gripper orientation basis.
-        
-        # Delta tracking (for incremental moves)
-        delta_extensions, delta_E1, delta_E1_quaternion (np.ndarray): Change tracking arrays.
+
+        #FOR OBSERVATIONS-----
+
+        # Current state
+        G1_relative_position (mm, relative to home position)
+        approach_vec (normalised vector)
+        radial_vec (normalised vector)
+
+        # Delta state
+        delta_extensions (normalised by actuator length)
+        G1_angular_velocity (degrees)
+        G1_velocity
+
     """
 
     def __init__(self, params=None, extensions=None, verbosity=2):
@@ -213,6 +223,10 @@ class RobotKinematics:
         self.last_solve_successful = False
         self.last_error_msg = "State has not been solved yet."
 
+        # Observations
+        self.G1_relative_position = np.zeros(3, dtype=np.float32)
+
+
     def _precompute_geometry(self):
         """Precompute geometric quantities for efficiency."""
         # Precompute local distance measurements
@@ -252,9 +266,9 @@ class RobotKinematics:
     def _initialize_deltas(self):
         """Initialize delta tracking arrays."""
         self.delta_extensions = np.zeros(4, dtype=np.float32)
-        self.E1_quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # Identity quaternion
-        self.delta_E1 = np.zeros(3, dtype=np.float32)
-        self.delta_E1_quaternion = np.zeros(4, dtype=np.float32)
+        self.G1_angular_velocity = np.zeros(3, dtype=np.float32)
+        self.G1_velocity = np.zeros(3, dtype=np.float32)
+
 
     def _initialize_home_pose(self):
         """Initialize home pose parameters."""
@@ -267,8 +281,8 @@ class RobotKinematics:
     def _zero_deltas(self):
         """Zero all delta tracking arrays."""
         self.delta_extensions.fill(0.0)
-        self.delta_E1.fill(0.0)
-        self.delta_E1_quaternion.fill(0.0)
+        self.G1_angular_velocity.fill(0.0)
+        self.G1_velocity.fill(0.0)
 
     def create_ring(self,
         outer_radius=None,
@@ -517,15 +531,11 @@ class RobotKinematics:
             - Camera position and orientation
             - Delta arrays (calculated from previous state)
         """
-        # Store previous state for delta calculation (if robot was previously solved)
-        if hasattr(self, 'E1') and hasattr(self, 'extensions') and hasattr(self, 'E1_quaternion'):
-            prev_e1 = self.E1.copy()
-            prev_extensions = self.extensions.copy()
-            prev_E1_quaternion = self.E1_quaternion.copy()
-            calculate_deltas = True
-        else:
-            calculate_deltas = False
-        
+        # Store previous state for delta calculation
+        prev_extensions = self.extensions.copy()
+        prev_G1_relative_position = self.G1_relative_position.copy()
+        prev_rotation_matrix = np.column_stack([self.approach_vec, self.tangential_vec, self.radial_vec])
+
         # --- Step 0: Validate input angles against physical limits ---
         if abs(rx_deg) > self.params['tilt_rx_limit_deg']:
             self.last_solve_successful = False
@@ -546,8 +556,6 @@ class RobotKinematics:
         
         rotation = R.from_euler('xyz', [rx_deg, 0, rz_deg], degrees=True)
         E1_w = np.array(e1_pos, dtype=np.float32)
-        # Store quaternion for E1 orientation
-        E1_quaternion = rotation.as_quat().astype(np.float32)  # [x, y, z, w]
 
         # Use precomputed local_points_matrix
         c_points_w = rotation.apply(self.local_points_matrix).astype(np.float32) + E1_w
@@ -634,15 +642,27 @@ class RobotKinematics:
         self.plane_normal = np.cross(C2_w - C1_w, C3_w - C1_w)
         self.plane_normal /= np.linalg.norm(self.plane_normal)
         self.extensions = extensions
-        self.E1_quaternion = E1_quaternion
+    
+
+        # Calculate new relative G1 position (for observations)
+        self.G1_relative_position = self.G1 - np.array([self.E1_home_x, self.E1_home_y, 0], dtype=np.float32)
+
+        # Calculate deltas from previous state
+        self.delta_extensions = self.extensions - prev_extensions
+        self.G1_velocity = self.G1_relative_position - prev_G1_relative_position
         
-        # Calculate deltas if previous state was available
-        if calculate_deltas:
-            actuator_delta = self.extensions - prev_extensions
-            self.delta_extensions[:] = actuator_delta
-            self.delta_E1[:] = self.E1 - prev_e1
-            self.delta_E1_quaternion[:] = self.E1_quaternion - prev_E1_quaternion
-        
+        current_rotation_matrix = np.column_stack([approach_vec, tangential_vec, radial_vec])
+
+        # Compute relative rotation matrix
+        R_rel = current_rotation_matrix @ prev_rotation_matrix.T
+
+        # Convert to scipy Rotation object
+        rel_rot = R.from_matrix(R_rel)
+        angular_delta = rel_rot.as_rotvec()  # radians
+
+        # we store angular velocity in degrees!
+        self.G1_angular_velocity = np.degrees(angular_delta).astype(np.float32)
+
         self.last_solve_successful = True
         self.last_error_msg = "IK solve successful."
         if self.verbosity >= 1:

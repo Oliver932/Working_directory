@@ -37,7 +37,6 @@ def evaluate_movement_at_point(robot, config, n_samples=100, independent=False):
     Returns:
         dict: Dictionary containing mean movement metrics:
             - mean_delta_E1: Mean E1 position change [x, y, z]
-            - mean_delta_E1_quaternion: Mean E1 quaternion change
             - mean_delta_extensions: Mean actuator extension changes
             - mean_G1_approach: Mean G1 movement along approach vector
             - mean_G1_radial: Mean G1 movement along radial vector  
@@ -71,13 +70,10 @@ def evaluate_movement_at_point(robot, config, n_samples=100, independent=False):
     original_approach = robot.approach_vec.copy()
     original_radial = robot.radial_vec.copy()
     original_tangential = robot.tangential_vec.copy()
-    original_extensions = robot.extensions.copy()
-    original_E1_quaternion = robot.E1_quaternion.copy()
     original_rx = robot.rx
     original_rz = robot.rz
     
     # Lists to store deltas for each successful movement
-    # Removed delta_E1_quaternion_list logging
     delta_extensions_list = []
     G1_approach_list = []
     G1_radial_list = []
