@@ -13,7 +13,7 @@ import time
 # Import custom modules for the robot simulation
 from arm_ik_model import RobotKinematics, Ring
 from collision_and_render_management import CollisionAndRenderManager
-from ring_projector import RingProjector
+from ring_projector_simplified import RingProjectorSimplified
 from overview_render_manager import OverviewRenderManager
 from system_plot_functions import visualize_system
 
@@ -30,7 +30,6 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     collision_proportions = []
     success_proportions = []
     visible_proportions = []
-    calculable_proportions = []
     invalid_setup_proportions = []
     avg_setup_times = []
     
@@ -38,13 +37,11 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     e1_difficulties = []
     e1_outcomes = []
     e1_visibility = []
-    e1_calculability = []
 
     for difficulty in difficulty_points:
         collisions = 0
         successes = 0
         visible_count = 0
-        calculable_count = 0
         invalid_setups = 0
         setup_times = []
         
@@ -73,7 +70,6 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
                 invalid_setups += 1
                 e1_outcomes.append('Invalid Setup')
                 e1_visibility.append(False)
-                e1_calculability.append(False)
                 continue
 
             setup_times.append(time.time() - start_time)
@@ -83,7 +79,7 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
             robot.go_home()
 
             collision_render_manager.update_poses(robot, ring)
-            ring_projector.update()
+            ring_projector.update(robot, ring)
 
             # Check for collision and successful grip (should match pose function validation)
             is_collision = collision_render_manager.check_collision()
@@ -91,11 +87,9 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
 
             ellipse_details = ring_projector.projected_properties
             is_visible = ellipse_details.get('visible', False)
-            is_calculable = ellipse_details.get('calculable', False)
             
-            # Store visibility and calculability for this position
+            # Store visibility for this position
             e1_visibility.append(is_visible)
-            e1_calculability.append(is_calculable)
 
             if is_collision:
                 collisions += 1
@@ -108,14 +102,11 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
 
             if is_visible:
                 visible_count += 1
-            if is_calculable:
-                calculable_count += 1
 
         valid_runs = n_runs - invalid_setups
         collision_proportions.append(collisions / valid_runs if valid_runs > 0 else 0)
         success_proportions.append(successes / valid_runs if valid_runs > 0 else 0)
         visible_proportions.append(visible_count / valid_runs if valid_runs > 0 else 0)
-        calculable_proportions.append(calculable_count / valid_runs if valid_runs > 0 else 0)
         invalid_setup_proportions.append(invalid_setups / n_runs)
         avg_setup_times.append(np.mean(setup_times) if setup_times else 0)
 
@@ -128,7 +119,6 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     ax1.plot(difficulty_labels, collision_proportions, marker='o', linestyle='-', label='Collisions', color='red')
     ax1.plot(difficulty_labels, success_proportions, marker='o', linestyle='-', label='Successes', color='green')
     ax1.plot(difficulty_labels, visible_proportions, marker='o', linestyle='-', label='Visible', color='blue')
-    ax1.plot(difficulty_labels, calculable_proportions, marker='o', linestyle='-', label='Calculable', color='orange')
     ax1.plot(difficulty_labels, invalid_setup_proportions, marker='o', linestyle='-', label='Invalid Setups', color='purple')
     
     ax1.set_ylabel('Proportion', color='black')
@@ -200,9 +190,8 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
     ax4.set_xlim(x_min, x_max)
     ax4.set_ylim(y_min, y_max)
     
-    # Plot 2: E1 positions by outcome with visibility/calculability indicators
-    # Marker meanings: Circle (o) = Visible+Calculable, Square (s) = Visible only, 
-    # Triangle (^) = Calculable only, X = Neither visible nor calculable
+    # Plot 2: E1 positions by outcome with visibility indicators
+    # Marker meanings: Circle (o) = Visible, X = Not visible
     outcome_colors = {
         'Success': '#2ca02c',       # Forest Green
         'Collision': '#d62728',      # Brick Red
@@ -210,32 +199,26 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
         'Other': '#7f7f7f'           # Medium Grey
     }
     
-    # Create different marker styles for visibility/calculability
+    # Create different marker styles for visibility
     for outcome, color in outcome_colors.items():
         outcome_indices = [i for i, o in enumerate(e1_outcomes) if o == outcome]
         if not outcome_indices:
             continue
             
-        # Separate by visibility and calculability status
-        for vis_status, calc_status, marker, alpha, size in [
-            (True, True, 'o', 0.8, 20),      # Visible and calculable: solid circle, larger
-            (True, False, 's', 0.7, 15),     # Visible but not calculable: square
-            (False, True, '^', 0.7, 15),     # Not visible but calculable: triangle
-            (False, False, 'x', 0.5, 12)     # Neither visible nor calculable: X, smaller
+        # Separate by visibility status
+        for vis_status, marker, alpha, size in [
+            (True, 'o', 0.8, 20),      # Visible: solid circle, larger
+            (False, 'x', 0.5, 12)      # Not visible: X, smaller
         ]:
             indices = [i for i in outcome_indices 
-                      if e1_visibility[i] == vis_status and e1_calculability[i] == calc_status]
+                      if e1_visibility[i] == vis_status]
             if indices:
                 label_suffix = ""
                 if outcome != 'Invalid Setup':  # Don't add visibility info for invalid setups
-                    if vis_status and calc_status:
-                        label_suffix = " (Vis+Calc)"
-                    elif vis_status:
-                        label_suffix = " (Vis only)"
-                    elif calc_status:
-                        label_suffix = " (Calc only)"
+                    if vis_status:
+                        label_suffix = " (Visible)"
                     else:
-                        label_suffix = " (Neither)"
+                        label_suffix = " (Not Visible)"
                 
                 ax5.scatter(e1_positions[indices, 0], e1_positions[indices, 1], 
                            c=color, marker=marker, label=f"{outcome}{label_suffix}", 
@@ -243,9 +226,9 @@ def test_ring_placement(robot, ring, ring_projector, collision_render_manager, r
 
     ax5.set_xlabel('E1 X Position (mm)', fontsize=12)
     ax5.set_ylabel('E1 Y Position (mm)', fontsize=12)
-    ax5.set_title('All Positions by Outcome & Visibility/Calculability', fontsize=16)
+    ax5.set_title('All Positions by Outcome & Visibility', fontsize=16)
     ax5.set_aspect('equal', adjustable='box')
-    ax5.legend(title='Outcome & Ellipse Properties', fontsize=8, bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax5.legend(title='Outcome & Visibility', fontsize=8, bbox_to_anchor=(1.05, 1), loc='upper left')
     ax5.set_xlim(x_min, x_max)
     ax5.set_ylim(y_min, y_max)
 
@@ -918,7 +901,7 @@ if __name__ == '__main__':
     home_success = robot.go_home()
     ring = robot.create_ring()
 
-    ring_projector = RingProjector(robot, ring, vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"], method='custom')
+    ring_projector = RingProjectorSimplified(vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"])
     collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
     
     test_ring_placement(robot, ring, ring_projector, collision_render_manager, set_random_pose_box_limit)

@@ -301,8 +301,8 @@ class CustomRobotEnv(gym.Env):
         self.visible_steps = 0
         
         # # Reset previous distance variables for improvement rewards
-        # self.previous_dist_E1 = None
-        # self.previous_dist_quaternion = None
+        self.previous_dist_E1 = None
+        self.previous_dist_quaternion = None
 
         # lets track some more complicated state postions for our reward
         
@@ -366,25 +366,24 @@ class CustomRobotEnv(gym.Env):
                 self.is_collision = True
                 terminated = True
 
-        # # Reward movement towards ideal position and orientation
-        # current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2)
-        # # Calculate quaternion distance (1 - |dot product|) to measure rotational difference
-        # quaternion_dot = np.abs(np.dot(self.robot.E1_quaternion, self.ideal_E1_quaternion))
-        # current_dist_quaternion = 1.0 - quaternion_dot  # Distance metric for quaternions
+        # Reward movement towards ideal position and orientation
+        current_dist_E1 = np.sum((self.robot.E1 - self.ideal_E1) ** 2)
+        # Calculate quaternion distance (1 - |dot product|) to measure rotational difference
+        quaternion_dot = np.abs(np.dot(self.robot.E1_quaternion, self.ideal_E1_quaternion))
+        current_dist_quaternion = 1.0 - quaternion_dot  # Distance metric for quaternions
         
-        # # Calculate improvement rewards (only after first step when previous distances exist)
-        # if self.previous_dist_E1 is not None:
-        #     # Reward improvement (movement towards goal)
-        #     improvement_E1 = (self.previous_dist_E1 - current_dist_E1)
-        #     improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion)
-            
-        #     # Scale the improvement rewards
-        #     reward += improvement_E1 # Reward position improvement
-        #     reward += improvement_quaternion # Reward orientation improvement
-        
-        # # Store current distances for next step
-        # self.previous_dist_E1 = current_dist_E1
-        # self.previous_dist_quaternion = current_dist_quaternion
+        # Calculate improvement rewards (only after first step when previous distances exist)
+        if self.previous_dist_E1 is not None:
+            # Reward improvement (movement towards goal)
+            improvement_E1 = (self.previous_dist_E1 - current_dist_E1)
+            improvement_quaternion = (self.previous_dist_quaternion - current_dist_quaternion)
+            # Scale the improvement rewards
+            reward += improvement_E1 * 0.5  # Reward position improvement
+            reward += improvement_quaternion * 0.5  # Reward orientation improvement
+
+        # Store current distances for next step
+        self.previous_dist_E1 = current_dist_E1
+        self.previous_dist_quaternion = current_dist_quaternion
 
         if not self.robot.last_solve_successful:
             reward += self.rewards["fail_move"]

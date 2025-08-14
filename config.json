@@ -7,9 +7,9 @@
     "environment": {
         "max_steps": 500,
         "multipliers": {
-            "linear": 5,
-            "rx": 5,
-            "rz": 5
+            "linear": 1.220,
+            "rx": 0.568,
+            "rz": 0.515
         },
         "rewards": {
             "success": 1000.0,

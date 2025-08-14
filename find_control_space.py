@@ -10,6 +10,7 @@ import imageio
 import glob
 from collections import deque
 import json
+import yaml
 import matplotlib.pyplot as plt
 import time
 from scipy.spatial.transform import Rotation as R
@@ -18,9 +19,6 @@ from scipy.spatial.transform import Rotation as R
 # Import custom modules for the robot simulation
 from arm_ik_model import RobotKinematics, Ring
 from collision_and_render_management import CollisionAndRenderManager
-from ring_projector import RingProjector
-from overview_render_manager import OverviewRenderManager
-from system_plot_functions import visualize_system
 
 from ring_placement import set_random_pose_box_limit
 
@@ -806,23 +804,22 @@ if __name__ == '__main__':
 
     home_success = robot.go_home()
     ring = robot.create_ring()
-
-    ring_projector = RingProjector(robot, ring, vertical_fov_deg=camera_settings["fov"], image_width=camera_settings["width"], image_height=camera_settings["height"], method='custom')
-    collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
     
-    # Test the evaluate_movement function
-    # print("\n--- Testing Movement Range Across Random Positions ---")
-    # robot.go_home()  # Start from a known good position
+    collision_render_manager = CollisionAndRenderManager(paths["gripper_col"], paths["gripper_col"], paths["ring_render"], paths["ring_col"], vertical_FOV=camera_settings["fov"], render_width=camera_settings["width"], render_height=camera_settings["height"])
 
-    # movement_summary = evaluate_movement_scales(robot, ring, collision_render_manager, config, n_positions=300, n_samples_per_pos=50)
-    # print("Movement range evaluation complete. See bar charts for details.")
+    # Test the evaluate_movement function
+    print("\n--- Testing Movement Range Across Random Positions ---")
+    robot.go_home()  # Start from a known good position
+
+    movement_summary = evaluate_movement_scales(robot, ring, collision_render_manager, config, n_positions=300, n_samples_per_pos=50)
+    print("Movement range evaluation complete. See bar charts for details.")
 
     # Test the evaluate_movement_relationships function
-    print("\n--- Testing Movement Relationships (Independent Axes) ---")
-    robot.go_home()  # Start from a known good position
+    # print("\n--- Testing Movement Relationships (Independent Axes) ---")
+    # robot.go_home()  # Start from a known good position
     
-    relationship_results = evaluate_movement_relationships(robot, ring, collision_render_manager, config, n_positions=1000, n_samples_per_pos=20)
-    print("Movement relationship evaluation complete. See scatter plots for details.")
+    # relationship_results = evaluate_movement_relationships(robot, ring, collision_render_manager, config, n_positions=1000, n_samples_per_pos=20)
+    # print("Movement relationship evaluation complete. See scatter plots for details.")
 
     # # Test the evaluate_gripper_tolerances function
     # print("\n--- Testing Gripper Tolerances Evaluation ---")
@@ -841,4 +838,4 @@ if __name__ == '__main__':
     #     print("Tolerance limits and ranges saved as gripper_tolerances.json")
     # else:
     #     print("Could not find valid pose for tolerance testing")
-    
+
